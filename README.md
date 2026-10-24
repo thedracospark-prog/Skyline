@@ -13,6 +13,35 @@ Skyline is a web-first, installable PWA: one link works on any phone, no app
 store. It runs on the Python 3 standard library alone (no pip installs, no
 build step) with a SQLite database, so it is easy to copy and run anywhere.
 
+## ▶ Try the web sim
+
+**https://thedracospark-prog.github.io/Skyline/sim/**
+
+The web sim is the **real Skyline app** — the same frontend that ships in
+this repo — running against simulated data entirely in your browser. No
+server, no account creation, nothing to install. It starts loaded with
+the app's SAMPLE demo fleet and two sample UTCs so you can see it alive
+immediately.
+
+**Logins** (any password works):
+
+- **editor** — an Editor: add/edit/delete vehicles, change
+  authorizations, build UTCs, import a CSV.
+- **viewer** — a Viewer: the same fleet picture, read-only.
+- Any other name also signs in as an Editor.
+
+**Worth trying:** flip a vehicle's status and watch its unit's MC rate
+and fleet-health picture move · open a UTC and see its own health view ·
+remove an authorization line from a unit screen · build your own UTC
+from the demo vehicles · import a small CSV (Type / Asset Number /
+Location columns) from a unit screen.
+
+Honest notes: the sim holds **demo SAMPLE data only** — nothing you do
+there is real or saved; **a page refresh resets it** to the demo fleet.
+Excel (.xlsx) import is the one thing the sim won't fake: parsing Excel
+is the Python server's job, so in the sim the import accepts **.csv**
+(the real app takes both).
+
 ## Run it
 
 ```bash

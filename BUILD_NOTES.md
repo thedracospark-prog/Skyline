@@ -614,3 +614,70 @@ double deletes unchanged. The reviewer's S2 (lenient path tail) is
 accepted by design: routes are prefix-matched deliberately because
 the nested `/api/utcs/<id>/vehicles/<vid>` membership path needs it,
 and every handler re-validates the row before acting.
+
+## Web sim (docs/sim/) — 2026-10-23
+
+The GitHub Pages sim at https://thedracospark-prog.github.io/Skyline/sim/
+(Pages serves the repo's /docs folder), linked from the README's
+"▶ Try the web sim" section. Same pattern as the Shepherd / Pack Out
+sims: **shim, don't fork**.
+
+- `docs/sim/` holds byte-identical copies of `static/`'s `app.js` and
+  `style.css` (verified by md5 and asserted in tests) plus
+  `index.html`, `manifest.json`, `icons/`. The sim copy of
+  `index.html` differs only by: the title gains "— Web Sim", asset
+  paths are made relative (root-absolute paths would 404 under the
+  /Skyline/sim/ subpath), and one added `<script src="sim.js">` tag
+  before `app.js`. `sw.js` is deliberately NOT copied.
+- `docs/sim/sim.js` is the only new code. Loaded before `app.js`, it
+  replaces `window.fetch`: `/api/*` requests are answered by an
+  in-memory mirror of server.py's API (same JSON shapes, status
+  codes, error strings, validation rules, snapshot semantics —
+  units[] = own stats, group = exact sum, half-up MC rate); all other
+  requests fall through to the real fetch. It also stubs
+  `navigator.serviceWorker` (the real SW must never cache the sim;
+  app.js's guarded register() gets a harmless resolving stub) and
+  clears any `skyline_*` localStorage keys on load, so a refresh
+  deterministically resets to the seed.
+- Seed = server.py's demo fleet verbatim (18 SAMPLE vehicles + 15
+  SAMPLE authorizations; due dates computed as today + due-days like
+  the server loader) plus two pre-built SAMPLE UTCs (XFFC1 / 14 ASOS,
+  X19RT / 19 ASOS) so UTC health shows immediately. Parity-proven:
+  the sim's seed snapshot was diffed against a live server's
+  post-demo-load snapshot — units, group, vehicles and
+  authorizations identical (group: 18 on hand, 33 authorizations,
+  FMC 12 / PMC 3 / NMC 3, MC 66.7).
+- Sim logins: `editor` (any password) = Editor demo user, `viewer`
+  (any password) = Viewer; any other name signs in as an Editor.
+  Injected login note + persistent "WEB SIM" pill come from sim.js —
+  app.js is never edited. State is in-memory only; refresh resets.
+- Import: CSV is parsed client-side through server.py's exact
+  column-mapping/preview/confirm rules. `.xlsx` returns an honest
+  400 ("parsing runs on the Python server… the sim accepts .csv") —
+  never fake-parsed.
+- Checks: `node tests/sim_check.js` — 29 checks (byte-identity of
+  app.js/style.css, asset existence, seed totals, role gates,
+  bumper 409, status-conflict mirror, authorization delete totals,
+  UTC 409/400 rules, CSV import preview/confirm, xlsx honesty,
+  audit, CSV export, logout). All passing.
+
+**Refreshing the sim when the app changes:** re-copy `static/`
+(app.js, style.css, manifest.json, icons/, index.html) into
+`docs/sim/`, re-apply the three index.html tweaks above (title,
+relative paths, sim.js tag), and if server.py's API or demo data
+changed, mirror it in `sim.js`. Re-run `tests/sim_check.js` and the
+snapshot parity diff before uploading.
+
+### Web sim review addendum (2026-10-23)
+
+Independent review verdict: **SHIP** — byte-identity of the sim's
+app.js/style.css verified, interception airtight (no /api/ path can
+fall through to the network), seed snapshot re-diffed against a live
+server with zero differences, 38 independent probes passed. Two
+SHOULD-FIX parity nits in the sim's CSV import were fixed post-review:
+(1) an ISO-shaped but impossible date (2026-02-30) now fails the
+whole preview with the server's exact 400, matching the server (whose
+ValidationError escapes its per-row catch), while non-ISO junk dates
+still skip per-row; (2) the sim's CSV lexer now matches Python's csv
+semantics — a quote is special only as the first character of a
+field, literal anywhere else. Both probed live; harness still 29/29.
