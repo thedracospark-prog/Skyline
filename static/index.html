@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Skyline — Fleet Management</title>
+<meta name="theme-color" content="#17122b">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icons/favicon-32.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ===================== LOGIN / SETUP ===================== -->
+<section id="view-auth" class="view">
+  <div class="auth-card">
+    <img class="auth-icon" src="/icons/icon-512.png" alt="Skyline icon">
+    <h1 class="app-name">SKYLINE</h1>
+    <p class="tagline">Fleet management — 18 ASOG &middot; 14 / 15 / 19 / 20 ASOS</p>
+
+    <form id="setup-form" class="hidden">
+      <h2>First-run setup</h2>
+      <p class="hint">No accounts exist yet. Create the first Admin account.</p>
+      <input id="su-username" placeholder="Username" aria-label="Username" autocomplete="username" required>
+      <input id="su-display" placeholder="Display name (e.g. Davis)" aria-label="Display name" required>
+      <input id="su-password" type="password" placeholder="Password (min 8 characters)" aria-label="Password" autocomplete="new-password" required>
+      <button class="btn primary" type="submit">Create Admin &amp; sign in</button>
+    </form>
+
+    <form id="login-form">
+      <input id="li-username" placeholder="Username" aria-label="Username" autocomplete="username" required>
+      <input id="li-password" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password" required>
+      <button class="btn primary" type="submit">Sign in</button>
+    </form>
+    <p id="auth-error" class="error"></p>
+    <p class="hint small">Accounts are created by an Admin — there is no public sign-up.</p>
+  </div>
+</section>
+
+<!-- ===================== APP FRAME ===================== -->
+<div id="app" class="hidden">
+  <header id="topbar">
+    <div class="tb-side tb-left">
+      <nav>
+        <button class="navbtn" data-nav="audit">Audit</button>
+        <button class="navbtn" id="nav-conflicts" data-nav="conflicts">Conflicts <span id="conflict-badge" class="badge hidden">0</span></button>
+        <button class="navbtn" id="nav-admin" data-nav="admin">Admin</button>
+        <button class="navbtn" id="btn-print">Rollup</button>
+        <a class="navbtn" id="btn-csv" href="/api/export.csv">CSV</a>
+      </nav>
+    </div>
+    <button id="btn-home" class="brand-center" title="Home">
+      <img src="/icons/icon-192.png" alt=""> <span>Skyline</span>
+    </button>
+    <div class="tb-side tb-right">
+      <div id="sync-pill" class="pill ok">● Synced</div>
+      <div id="user-chip"></div>
+      <button id="btn-logout" class="navbtn">Sign out</button>
+      <button id="btn-logout-discard" class="navbtn hidden" style="color:var(--nmc)">Discard edits &amp; sign out</button>
+    </div>
+  </header>
+  <div id="notice" class="notice hidden" role="alert"></div>
+
+  <main>
+    <!-- HOME -->
+    <section id="view-home" class="view">
+      <div id="tiles"></div>
+    </section>
+
+    <!-- UNIT -->
+    <section id="view-unit" class="view hidden">
+      <button class="backbtn" data-back>← All units</button>
+      <h2 id="unit-title"></h2>
+      <div id="unit-stats" class="statrow"></div>
+      <div id="unit-group-summary" class="card hidden"></div>
+      <div id="viz-wrap" class="vizwrap"></div>
+      <div class="toolbar">
+        <input id="veh-search" placeholder="Search bumper #, type, location…" aria-label="Search vehicles">
+        <div class="seg" id="status-filter">
+          <button data-f="ALL" class="on">All</button>
+          <button data-f="FMC">FMC</button>
+          <button data-f="PMC">PMC</button>
+          <button data-f="NMC">NMC</button>
+        </div>
+        <button id="btn-add-vehicle" class="btn primary editor-only">+ Add vehicle</button>
+        <button id="btn-import" class="btn editor-only">Import from Excel</button>
+        <input id="import-file" type="file" accept=".xlsx,.csv" class="hidden" aria-label="Spreadsheet file to import (.xlsx or .csv)">
+      </div>
+      <div id="import-preview" class="card hidden"></div>
+      <form id="add-form" class="card hidden">
+        <h3>Add vehicle</h3>
+        <div class="grid2">
+          <select id="av-unit" aria-label="Unit" required></select>
+          <input id="av-bumper" placeholder="ID / Bumper #" aria-label="ID / Bumper number" required>
+          <input id="av-type" placeholder="Type (e.g. JLTV)" aria-label="Vehicle type" list="type-list" required>
+          <input id="av-mileage" type="number" placeholder="Mileage / hours" aria-label="Mileage or hours">
+          <input id="av-location" placeholder="Location" aria-label="Location">
+          <label>Maintenance due <input id="av-due" type="date" aria-label="Maintenance due date"></label>
+          <input id="av-due-miles" type="number" placeholder="Due at miles (optional)" aria-label="Maintenance due at miles">
+        </div>
+        <input id="av-notes" placeholder="Notes" aria-label="Notes">
+        <div class="row">
+          <button class="btn primary" type="submit">Add vehicle</button>
+          <button class="btn ghost" type="button" id="av-cancel">Cancel</button>
+        </div>
+      </form>
+      <datalist id="type-list"></datalist>
+      <div id="vehicle-list"></div>
+
+      <div class="card">
+        <h3>Authorizations <span class="hint">(this unit — authorized vs on hand, per vehicle type)</span></h3>
+        <div id="unit-auth-list"></div>
+        <form id="unit-auth-add" class="editor-only" style="margin-top:12px">
+          <div class="grid2">
+            <input id="uaa-type" placeholder="New type (e.g. JLTV)" aria-label="New authorization vehicle type" list="type-list" required>
+            <input id="uaa-count" type="number" min="0" placeholder="Authorized count" aria-label="New authorization count" required>
+          </div>
+          <button class="btn" type="submit">Add type</button>
+          <span class="hint">Works even with zero vehicles of that type on hand.</span>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>UTCs <span class="hint">(Unit Type Codes — deployment packages for this unit)</span></h3>
+        <div id="utc-list"></div>
+        <button id="btn-new-utc" class="btn primary editor-only">+ New UTC</button>
+        <form id="utc-form" class="hidden" style="margin-top:12px">
+          <div class="grid2">
+            <input id="utc-code" placeholder="Code (e.g. XFFC1)" aria-label="UTC code" maxlength="20" required>
+            <input id="utc-title-input" placeholder="Title / description" aria-label="UTC title">
+          </div>
+          <button class="btn primary" type="submit">Create UTC</button>
+          <span class="hint">UTC changes are online-only in v1.1 — viewing works offline.</span>
+        </form>
+      </div>
+    </section>
+
+    <!-- UTC DETAIL -->
+    <section id="view-utc" class="view hidden">
+      <button class="backbtn" id="utc-back">← Back to unit</button>
+      <h2 id="utc-title"></h2>
+      <div id="utc-stats" class="statrow"></div>
+      <div id="utc-viz-wrap" class="vizwrap"></div>
+      <h3 style="margin-top:18px">Vehicles in this UTC</h3>
+      <div id="utc-members"></div>
+      <div id="utc-editor-tools">
+        <div class="card">
+          <h3>Add vehicles <span class="hint">(this unit's vehicles not yet in the UTC)</span></h3>
+          <div id="utc-add-list"></div>
+          <button class="btn primary" id="utc-add-confirm" style="margin-top:10px">Add selected</button>
+        </div>
+        <div class="card">
+          <h3>Edit UTC</h3>
+          <div class="grid2">
+            <input id="utc-edit-code" placeholder="Code" aria-label="UTC code" maxlength="20">
+            <input id="utc-edit-title" placeholder="Title / description" aria-label="UTC title">
+          </div>
+          <div class="row">
+            <button class="btn primary" id="utc-save">Save changes</button>
+            <button class="btn danger" id="utc-delete">Delete UTC</button>
+          </div>
+          <p class="hint">Deleting a UTC removes only the package — never its vehicles.
+          UTC changes need a connection (online-only in v1.1).</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- VEHICLE -->
+    <section id="view-vehicle" class="view hidden">
+      <button class="backbtn" id="veh-back">← Back to unit</button>
+      <div id="vehicle-detail"></div>
+    </section>
+
+    <!-- AUDIT -->
+    <section id="view-audit" class="view hidden">
+      <button class="backbtn" data-back>← All units</button>
+      <h2>Audit log</h2>
+      <div id="audit-list"></div>
+    </section>
+
+    <!-- CONFLICTS -->
+    <section id="view-conflicts" class="view hidden">
+      <button class="backbtn" data-back>← All units</button>
+      <h2>Sync conflicts</h2>
+      <p class="hint">A conflicting offline status change never overwrites the current
+      status silently. An Editor decides which status stands.</p>
+      <div id="conflict-list"></div>
+    </section>
+
+    <!-- ADMIN -->
+    <section id="view-admin" class="view hidden">
+      <button class="backbtn" data-back>← All units</button>
+      <h2>Admin</h2>
+
+      <div class="card">
+        <h3>Create account</h3>
+        <form id="user-form">
+          <div class="grid2">
+            <input id="uf-username" placeholder="Username" aria-label="New account username" required>
+            <input id="uf-display" placeholder="Display name" aria-label="New account display name" required>
+            <input id="uf-password" type="password" placeholder="Password (min 8)" aria-label="New account password" required>
+            <select id="uf-unit" aria-label="New account unit"></select>
+            <select id="uf-role" aria-label="New account role">
+              <option value="viewer">Viewer — read all</option>
+              <option value="editor">Editor — update any unit</option>
+              <option value="admin">Admin — everything</option>
+            </select>
+          </div>
+          <button class="btn primary" type="submit">Create account</button>
+          <span id="uf-msg" class="hint"></span>
+        </form>
+        <div id="user-list"></div>
+      </div>
+
+      <div class="card">
+        <h3>Authorizations <span class="hint">(per unit, per vehicle type — on-hand is counted from vehicle records)</span></h3>
+        <form id="auth-form">
+          <div class="grid2">
+            <select id="af-unit" aria-label="Authorization unit"></select>
+            <input id="af-type" placeholder="Vehicle type (e.g. JLTV)" aria-label="Authorization vehicle type" list="type-list" required>
+            <input id="af-count" type="number" min="0" placeholder="Authorized count" aria-label="Authorized count" required>
+          </div>
+          <button class="btn primary" type="submit">Save authorization</button>
+        </form>
+        <div id="auth-list"></div>
+      </div>
+
+      <div class="card">
+        <h3>Demo data</h3>
+        <p class="hint">Loads a clearly SAMPLE-labeled demo fleet across the squadrons so you
+        can see Skyline alive. Removing it deletes only the sample vehicles.</p>
+        <button class="btn" id="btn-demo-load">Load demo fleet</button>
+        <button class="btn danger" id="btn-demo-remove">Remove demo fleet</button>
+        <span id="demo-msg" class="hint" role="status"></span>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- printable rollup (populated on demand) -->
+<div id="print-area"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

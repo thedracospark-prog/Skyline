@@ -1,0 +1,215 @@
+:root{
+  --bg:#0d0b14; --panel:#17122b; --panel2:#1f1838; --line:#2d2450;
+  --text:#ece8f7; --dim:#a79ec4; --purple:#8b5cf6; --purple2:#b78cff;
+  --fmc:#3ddc84; --pmc:#ffb54d; --nmc:#ff5d6c; --warm:#ffd58a;
+  --radius:16px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.hidden{display:none!important}
+button{font:inherit;cursor:pointer}
+input,select{background:var(--panel2);border:1px solid var(--line);
+  color:var(--text);border-radius:10px;padding:11px 12px;font:inherit;width:100%}
+input:focus,select:focus{outline:2px solid var(--purple);border-color:transparent}
+label{color:var(--dim);font-size:.85rem;display:flex;flex-direction:column;gap:4px}
+
+/* ---------- views & transitions ---------- */
+.view{animation:viewIn .25s ease both;max-width:1080px;margin:0 auto;padding:18px 16px 64px}
+@keyframes viewIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+main .view{padding-top:8px}
+
+/* ---------- auth ---------- */
+#view-auth{display:flex;min-height:100vh;align-items:center;justify-content:center;max-width:none}
+.auth-card{background:var(--panel);border:1px solid var(--line);border-radius:24px;
+  padding:28px 24px;width:min(400px,92vw);text-align:center;
+  box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.auth-icon{width:168px;height:168px;border-radius:36px;box-shadow:0 12px 36px rgba(139,92,246,.4)}
+.app-name{letter-spacing:.35em;margin:16px 0 2px;font-size:2.3rem;font-weight:800}
+.tagline{color:var(--dim);margin:0 0 18px;font-size:.9rem}
+.auth-card form{display:flex;flex-direction:column;gap:10px;margin-top:12px;text-align:left}
+.auth-card h2{margin:4px 0 0;font-size:1.05rem}
+.error{color:var(--nmc);min-height:1.2em;font-size:.9rem}
+.hint{color:var(--dim);font-size:.88rem}
+.hint.small{font-size:.78rem}
+
+/* ---------- buttons ---------- */
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  border-radius:12px;padding:11px 16px;transition:transform .15s,background .15s}
+.btn:hover{background:#2a2050}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:var(--purple);border-color:var(--purple);color:#fff;font-weight:600}
+.btn.primary:hover{background:#7c4dff}
+.btn.ghost{background:transparent}
+.btn.danger{border-color:#5c2230;color:var(--nmc)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+/* ---------- top bar ---------- */
+/* Three-column grid (1fr auto 1fr): the Cooper + Skyline brand sits in
+   the middle track, so it stays TRULY centered no matter how wide the
+   left nav or right controls get. On phone widths the grid collapses
+   to one column with the brand centered on its own row. */
+#topbar{position:sticky;top:0;z-index:20;display:grid;
+  grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;
+  background:rgba(13,11,20,.92);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);padding:8px 12px}
+.tb-side{display:flex;gap:6px;align-items:center;min-width:0}
+.tb-left{justify-content:flex-start}
+.tb-right{justify-content:flex-end;flex-wrap:wrap}
+.brand-center{display:flex;gap:11px;align-items:center;justify-content:center;
+  background:none;border:0;color:var(--text);cursor:pointer;
+  font-weight:800;font-size:1.6rem;letter-spacing:.16em;
+  min-height:52px;padding:2px 10px;border-radius:12px}
+.brand-center img{width:48px;height:48px;border-radius:12px;
+  box-shadow:0 4px 16px rgba(139,92,246,.4)}
+#topbar nav{display:flex;gap:4px;flex-wrap:wrap}
+.navbtn{background:none;border:0;color:var(--dim);padding:8px 10px;border-radius:9px;
+  text-decoration:none;font-size:.92rem;min-height:44px;
+  display:inline-flex;align-items:center}
+@media(max-width:760px){
+  #topbar{grid-template-columns:1fr}
+  .brand-center{grid-row:1;justify-self:center;font-size:1.35rem;min-height:48px}
+  .brand-center img{width:42px;height:42px}
+  .tb-left{grid-row:2;justify-content:center}
+  .tb-right{grid-row:3;justify-content:center}
+  #user-chip{display:none}
+}
+.navbtn:hover{color:var(--text);background:var(--panel2)}
+.badge{background:var(--nmc);color:#fff;border-radius:999px;padding:0 7px;font-size:.75rem}
+.pill{border-radius:999px;padding:5px 11px;font-size:.8rem;border:1px solid var(--line);color:var(--dim)}
+.pill.ok{color:var(--fmc)} .pill.warn{color:var(--pmc)} .pill.off{color:var(--nmc)}
+#user-chip{color:var(--dim);font-size:.88rem}
+#user-chip b{color:var(--text)}
+
+/* ---------- home tiles ---------- */
+#tiles{display:flex;flex-direction:column;gap:14px;margin-top:14px}
+.tile{background:linear-gradient(160deg,var(--panel2),var(--panel));
+  border:1px solid var(--line);border-radius:var(--radius);padding:18px;
+  text-align:left;color:var(--text);width:100%;
+  transition:transform .25s ease,border-color .25s ease,box-shadow .25s}
+.tile:hover{transform:translateY(-2px);border-color:var(--purple);
+  box-shadow:0 12px 32px rgba(139,92,246,.25)}
+.tile:active{transform:scale(.99)}
+.tile .tname{font-size:1.35rem;font-weight:800;letter-spacing:.05em}
+.tile .tsub{color:var(--dim);font-size:.85rem;margin-bottom:10px}
+.tile-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.tile.sq .tname{font-size:1.15rem}
+.stats{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0}
+.stat .num{font-size:1.45rem;font-weight:800}
+.stat .lbl{color:var(--dim);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em}
+.mcbar{height:12px;background:#0a0812;border-radius:999px;overflow:hidden;border:1px solid var(--line)}
+.mcbar > div{height:100%;width:0;border-radius:999px;
+  background:linear-gradient(90deg,var(--purple),var(--fmc));
+  transition:width .3s cubic-bezier(.2,.8,.2,1)}
+.mc{font-weight:800} .mc.good{color:var(--fmc)} .mc.mid{color:var(--pmc)} .mc.bad{color:var(--nmc)}
+.counts-line{color:var(--dim);font-size:.85rem;margin-top:6px}
+.counts-line b{color:var(--text)}
+
+/* ---------- unit screen ---------- */
+.backbtn{background:none;border:0;color:var(--purple2);padding:6px 0;font-size:.95rem}
+.statrow{display:flex;gap:12px;flex-wrap:wrap;margin:10px 0 14px}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:9px 14px}
+.chip b{font-size:1.1rem}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:14px 0}
+.toolbar input{flex:1;min-width:200px;width:auto}
+.seg{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.seg button{background:none;border:0;color:var(--dim);padding:10px 14px}
+.seg button.on{background:var(--purple);color:#fff}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  padding:18px;margin:14px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+@media(max-width:560px){.grid2{grid-template-columns:1fr}.tile-grid{grid-template-columns:1fr}}
+
+/* ---------- vehicle cards ---------- */
+.vcard{background:var(--panel);border:1px solid var(--line);border-left:6px solid var(--dim);
+  border-radius:14px;padding:14px 16px;margin:10px 0;width:100%;text-align:left;color:var(--text);
+  transition:transform .2s,border-color .2s,background .3s}
+.vcard:hover{transform:translateX(3px)}
+.vcard.FMC{border-left-color:var(--fmc)} .vcard.PMC{border-left-color:var(--pmc)}
+.vcard.NMC{border-left-color:var(--nmc)}
+.vcard.flash{animation:flash .5s ease}
+@keyframes flash{0%{background:#3a2a6e}100%{background:var(--panel)}}
+.vcard .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.vcard .bumper{font-weight:800;font-size:1.08rem}
+.vcard .meta{color:var(--dim);font-size:.88rem;margin-top:3px}
+.st{font-weight:800;padding:2px 10px;border-radius:999px;font-size:.8rem;white-space:nowrap}
+.st.FMC{background:rgba(61,220,132,.15);color:var(--fmc)}
+.st.PMC{background:rgba(255,181,77,.15);color:var(--pmc)}
+.st.NMC{background:rgba(255,93,108,.15);color:var(--nmc)}
+.sampletag{background:#4a3503;color:var(--pmc);border-radius:6px;padding:0 6px;
+  font-size:.7rem;font-weight:700;letter-spacing:.05em}
+.duetag{color:var(--pmc);font-weight:700}
+.duetag.overdue{color:var(--nmc)}
+
+/* ---------- vehicle detail ---------- */
+.statusbtns{display:flex;gap:10px;margin:14px 0}
+.statusbtns button{flex:1;padding:18px 6px;border-radius:14px;border:2px solid var(--line);
+  background:var(--panel2);color:var(--dim);font-weight:800;font-size:1.05rem;
+  transition:all .2s}
+.statusbtns button.sel-FMC{border-color:var(--fmc);color:var(--fmc);background:rgba(61,220,132,.12)}
+.statusbtns button.sel-PMC{border-color:var(--pmc);color:var(--pmc);background:rgba(255,181,77,.12)}
+.statusbtns button.sel-NMC{border-color:var(--nmc);color:var(--nmc);background:rgba(255,93,108,.12)}
+.field{margin:10px 0}
+.field .lbl{color:var(--dim);font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+
+/* ---------- audit / conflicts / admin lists ---------- */
+.arow{border-bottom:1px solid var(--line);padding:9px 2px;font-size:.92rem}
+.arow .when{color:var(--dim);font-size:.8rem}
+.arow.conflictrow{background:rgba(255,93,108,.07)}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+th,td{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left}
+th{color:var(--dim);font-weight:600}
+select.inline{width:auto;padding:6px 8px}
+
+/* ---------- the fleet health visualization ---------- */
+.vizwrap{background:linear-gradient(180deg,#07060f,#0d0b14);
+  border:1px solid var(--line);border-radius:var(--radius);overflow-x:auto;overflow-y:hidden}
+.viz-caption{padding:8px 12px;color:var(--dim);font-size:.82rem;border-top:1px solid var(--line)}
+.vizwrap .bldg:focus{outline:none}
+.vizwrap .bldg:focus .body{stroke:var(--purple2);stroke-width:2.5}
+.vizwrap svg{display:block;width:100%;height:auto}
+.vizwrap .bldg{cursor:pointer;transition:opacity .2s}
+.vizwrap .bldg:hover{opacity:.85}
+.vizwrap .bldg.sel .body{stroke:var(--purple2);stroke-width:2.5}
+.vizwrap .beacon{animation:beaconPulse 1.8s ease-in-out infinite}
+@keyframes beaconPulse{0%,100%{opacity:.25}50%{opacity:1}}
+.vizwrap .flicker{animation:winFlicker 3.2s linear infinite}
+@keyframes winFlicker{0%,92%,100%{opacity:1}94%{opacity:.25}96%{opacity:.8}98%{opacity:.4}}
+.vizwrap .twinkle{animation:tw 4s ease-in-out infinite}
+@keyframes tw{0%,100%{opacity:.35}50%{opacity:.9}}
+.vizwrap .district-lbl{fill:#8d83ad;font-size:10px;letter-spacing:.14em}
+.viz-empty{padding:34px;text-align:center;color:var(--dim)}
+
+/* ---------- v1.1: authorizations + UTCs ---------- */
+.auth-num{width:96px}
+.utc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;margin:10px 0}
+.utc-card{background:var(--panel2);border:1px solid var(--line);border-radius:14px;
+  padding:14px 16px;text-align:left;color:var(--text);cursor:pointer;width:100%;
+  transition:transform .2s,border-color .2s}
+.utc-card:hover{transform:translateY(-2px);border-color:var(--purple)}
+.utc-card .ucode{font-weight:800;font-size:1.15rem;letter-spacing:.06em}
+.utc-card .utitle{color:var(--dim);font-size:.9rem;margin:2px 0 8px}
+.utc-card .ucounts{font-size:.88rem;color:var(--dim);margin-top:6px}
+.utc-card .ucounts b{color:var(--text)}
+.checkrow{display:flex;gap:10px;align-items:center;padding:8px 4px;
+  border-bottom:1px solid var(--line);min-height:44px;cursor:pointer}
+.checkrow input{width:20px;height:20px;flex:none}
+
+/* ---------- notices / flash ---------- */
+.notice{max-width:1080px;margin:10px auto 0;padding:11px 16px;border-radius:12px;
+  border:1px solid var(--line);background:var(--panel2);font-size:.92rem}
+.notice.err{border-color:#5c2230;color:#ffb3ba}
+.notice.ok{border-color:#1d4d33;color:#a7e8c5}
+.card.flash{animation:flash .5s ease}
+
+/* ---------- print rollup ---------- */
+#print-area{display:none}
+@media print{
+  body>*{display:none!important}
+  #print-area{display:block!important;color:#000;background:#fff;
+    font-family:Georgia,serif;padding:24px}
+  #print-area table th,#print-area table td{border-bottom:1px solid #999}
+  #print-area h1{font-size:20px} #print-area h2{font-size:15px;margin-top:22px}
+}
