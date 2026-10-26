@@ -69,30 +69,31 @@ class ApiTests(unittest.TestCase):
         # (FK-safe order: sessions reference users, so they go first)
         conn = sky.connect(sky.Handler.db_path)
         try:
-            for t in ("sessions", "conflicts", "audit", "vehicles",
-                      "authorizations", "users"):
+            for t in ("sessions", "conflicts", "discrepancy_photos",
+                      "discrepancies", "inspection_items", "inspections",
+                      "audit", "vehicles", "authorizations", "users"):
                 conn.execute(f"DELETE FROM {t}")
             conn.commit()
         finally:
             conn.close()
         _, adm = req(self.base, "POST", "/api/setup",
-                     {"username": "boss", "password": "admin-pass-1",
+                     {"username": "boss", "password": "vco-pass-1",
                       "display_name": "Boss", "unit": "18 ASOG"})
-        self.assertEqual(adm.get("user", {}).get("role"), "admin")
+        self.assertEqual(adm.get("user", {}).get("role"), "vco")
         _, login = req(self.base, "POST", "/api/login",
-                       {"username": "boss", "password": "admin-pass-1"})
-        self.admin = login["token"]
+                       {"username": "boss", "password": "vco-pass-1"})
+        self.vco = login["token"]
         req(self.base, "POST", "/api/users",
-            {"username": "vic", "password": "viewer-pass-1",
-             "display_name": "Vic Viewer", "unit": "14 ASOS",
-             "role": "viewer"}, self.admin)
+            {"username": "vic", "password": "operator-pass-1",
+             "display_name": "Vic Operator", "unit": "14 ASOS",
+             "role": "operator"}, self.vco)
         req(self.base, "POST", "/api/users",
             {"username": "ed", "password": "editor-pass-1",
              "display_name": "Ed Editor", "unit": "15 ASOS",
-             "role": "editor"}, self.admin)
+             "role": "editor"}, self.vco)
         _, lv = req(self.base, "POST", "/api/login",
-                    {"username": "vic", "password": "viewer-pass-1"})
-        self.viewer = lv["token"]
+                    {"username": "vic", "password": "operator-pass-1"})
+        self.operator = lv["token"]
         _, le = req(self.base, "POST", "/api/login",
                     {"username": "ed", "password": "editor-pass-1"})
         self.editor = le["token"]
@@ -120,14 +121,14 @@ class ApiTests(unittest.TestCase):
         body.update(kw)
         return req(self.base, "POST", "/api/vehicles", body, token)
 
-    def test_viewer_cannot_create_or_edit(self):
-        code, _ = self.add_vehicle(self.viewer)
+    def test_operator_cannot_create_or_edit_vehicles(self):
+        code, _ = self.add_vehicle(self.operator)
         self.assertEqual(code, 403)
         code, v = self.add_vehicle(self.editor)
         self.assertEqual(code, 201)
         vid = v["vehicle"]["id"]
         code, _ = req(self.base, "PUT", f"/api/vehicles/{vid}",
-                      {"status": "NMC"}, self.viewer)
+                      {"status": "NMC"}, self.operator)
         self.assertEqual(code, 403)
 
     def test_editor_can_create_and_edit(self):
@@ -148,7 +149,7 @@ class ApiTests(unittest.TestCase):
         req(self.base, "POST", "/api/authorizations",
             {"unit": "14 ASOS", "vehicle_type": "JLTV", "authorized": 6},
             self.editor)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         st = next(u for u in fleet["units"] if u["unit"] == "14 ASOS")
         self.assertEqual(st["on_hand"], 4)          # derived from records
         self.assertEqual(st["authorizations"], 6)
@@ -163,7 +164,7 @@ class ApiTests(unittest.TestCase):
         vid = v["vehicle"]["id"]
         req(self.base, "PUT", f"/api/vehicles/{vid}",
             {"notes": "needs tires", "base_status": "FMC"}, self.editor)
-        _, log = req(self.base, "GET", "/api/audit", token=self.viewer)
+        _, log = req(self.base, "GET", "/api/audit", token=self.operator)
         actions = [(a["action"], a["field"]) for a in log["audit"]]
         self.assertIn(("create", ""), actions)
         self.assertIn(("update", "notes"), actions)
@@ -177,7 +178,7 @@ class ApiTests(unittest.TestCase):
         vid = v["vehicle"]["id"]
         # someone else moves it FMC -> PMC first
         req(self.base, "PUT", f"/api/vehicles/{vid}",
-            {"status": "PMC", "base_status": "FMC"}, self.admin)
+            {"status": "PMC", "base_status": "FMC"}, self.vco)
         # an offline editor, still seeing FMC, sets NMC and changes location
         code, r = req(self.base, "PUT", f"/api/vehicles/{vid}",
                       {"status": "NMC", "base_status": "FMC",
@@ -196,20 +197,20 @@ class ApiTests(unittest.TestCase):
         code, _ = req(self.base, "POST", f"/api/conflicts/{cid}/resolve",
                       {"action": "apply"}, self.editor)
         self.assertEqual(code, 200)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         veh = next(x for x in fleet["vehicles"] if x["id"] == vid)
         self.assertEqual(veh["status"], "NMC")
 
     def test_demo_fleet_is_labeled_and_removable(self):
-        code, _ = req(self.base, "POST", "/api/demo/load", {}, self.admin)
+        code, _ = req(self.base, "POST", "/api/demo/load", {}, self.vco)
         self.assertEqual(code, 200)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         self.assertGreater(len(fleet["vehicles"]), 0)
         self.assertTrue(all(v["is_demo"] for v in fleet["vehicles"]))
         self.assertTrue(all("SAMPLE" in v["notes"]
                             for v in fleet["vehicles"]))
-        req(self.base, "POST", "/api/demo/remove", {}, self.admin)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        req(self.base, "POST", "/api/demo/remove", {}, self.vco)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         self.assertEqual(len(fleet["vehicles"]), 0)
 
 
@@ -258,10 +259,10 @@ def start_server(db_path):
 
 
 class FixPassTests(ApiTests):
-    """Inherits ApiTests.setUp (fresh admin/editor/viewer per test)."""
+    """Inherits ApiTests.setUp (fresh vco/editor/operator per test)."""
 
     # ---- item 1: atomic first-run setup
-    def test_parallel_setup_creates_exactly_one_admin(self):
+    def test_parallel_setup_creates_exactly_one_vco(self):
         tmp = tempfile.mkdtemp()
         db = os.path.join(tmp, "race.db")
         httpd, base, _ = start_server(db)
@@ -284,7 +285,7 @@ class FixPassTests(ApiTests):
             self.assertIn("token", winner)
             code, me = req(base, "GET", "/api/me", token=winner["token"])
             self.assertEqual(code, 200)
-            self.assertEqual(me["user"]["role"], "admin")
+            self.assertEqual(me["user"]["role"], "vco")
         finally:
             httpd.shutdown()
 
@@ -312,7 +313,7 @@ class FixPassTests(ApiTests):
         self.add_vehicle(self.editor, unit="14 ASOS", bumper="G-2", status="NMC")
         self.add_vehicle(self.editor, unit="15 ASOS", bumper="G-3", status="PMC")
         self.add_vehicle(self.editor, unit="15 ASOS", bumper="G-4", status="FMC")
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         grp = fleet["group"]                        # v1.1: separate entry
         self.assertEqual(grp["on_hand"], 4)
         self.assertEqual(grp["pmc"], 2)
@@ -327,7 +328,7 @@ class FixPassTests(ApiTests):
                                 bumper="CF-" + uuid.uuid4().hex[:8])
         vid = v["vehicle"]["id"]
         req(self.base, "PUT", f"/api/vehicles/{vid}",
-            {"status": "PMC", "base_status": "FMC"}, self.admin)
+            {"status": "PMC", "base_status": "FMC"}, self.vco)
         _, r = req(self.base, "PUT", f"/api/vehicles/{vid}",
                    {"status": "NMC", "base_status": "FMC"}, self.editor)
         return vid, r["conflict"]["id"]
@@ -348,7 +349,7 @@ class FixPassTests(ApiTests):
         code, _ = req(self.base, "POST", f"/api/conflicts/{cid}/resolve",
                       {"action": "apply"}, self.editor)
         self.assertEqual(code, 409)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         veh = next(x for x in fleet["vehicles"] if x["id"] == vid)
         self.assertEqual(veh["status"], "PMC")  # keep won; re-resolve didn't apply
 
@@ -357,16 +358,16 @@ class FixPassTests(ApiTests):
         req(self.base, "POST", "/api/authorizations",
             {"unit": "14 ASOS", "vehicle_type": "JLTV", "authorized": 7},
             self.editor)
-        req(self.base, "POST", "/api/demo/load", {}, self.admin)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        req(self.base, "POST", "/api/demo/load", {}, self.vco)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         auth = next(a for a in fleet["authorizations"]
                     if a["unit"] == "14 ASOS" and a["vehicle_type"] == "JLTV")
         self.assertEqual(auth["authorized"], 7)   # real value untouched
         self.assertEqual(auth["is_demo"], 0)
         n_after_first = len(fleet["vehicles"])
         # idempotent: second load adds nothing
-        req(self.base, "POST", "/api/demo/load", {}, self.admin)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        req(self.base, "POST", "/api/demo/load", {}, self.vco)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         self.assertEqual(len(fleet["vehicles"]), n_after_first)
         # a real edit of a demo-flagged authorization clears its demo flag
         demo_auth = next(a for a in fleet["authorizations"] if a["is_demo"])
@@ -374,8 +375,8 @@ class FixPassTests(ApiTests):
             {"unit": demo_auth["unit"], "vehicle_type": demo_auth["vehicle_type"],
              "authorized": 9}, self.editor)
         # remove demo: real + real-edited authorizations survive
-        req(self.base, "POST", "/api/demo/remove", {}, self.admin)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        req(self.base, "POST", "/api/demo/remove", {}, self.vco)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         self.assertEqual(len(fleet["vehicles"]), 0)
         kept = {(a["unit"], a["vehicle_type"]): a["authorized"]
                 for a in fleet["authorizations"]}
@@ -428,7 +429,7 @@ class FixPassTests(ApiTests):
         code, _ = req(self.base, "POST", "/api/users",
                       {"username": "zz", "password": "zz-pass-123",
                        "display_name": "Zed", "unit": "Narnia",
-                       "role": "viewer"}, self.admin)
+                       "role": "operator"}, self.vco)
         self.assertEqual(code, 400)
 
     # ---- item 7: no request dies without JSON; unknown ids 404
@@ -444,7 +445,7 @@ class FixPassTests(ApiTests):
                              b"x" * (1024 * 1024 + 10))
         self.assertEqual(code, 413)
         code, _ = req(self.base, "PUT", "/api/users/99999",
-                      {"role": "editor"}, self.admin)
+                      {"role": "editor"}, self.vco)
         self.assertEqual(code, 404)  # no ghost success
         code, _ = req(self.base, "DELETE", "/api/vehicles/99999",
                       token=self.editor)
@@ -453,55 +454,55 @@ class FixPassTests(ApiTests):
                       {"action": "keep"}, self.editor)
         self.assertEqual(code, 404)
 
-    # ---- item 8: session expiry / revocation / last-admin guard
-    def test_session_revocation_and_last_admin(self):
+    # ---- item 8: session expiry / revocation / last-vco guard
+    def test_session_revocation_and_last_vco(self):
         # role change revokes the target's sessions
         code, _ = req(self.base, "PUT", "/api/users/3", {"role": "editor"},
-                      self.admin)  # ed (id 3) editor -> editor? ensure exists
-        _, users = req(self.base, "GET", "/api/users", token=self.admin)
+                      self.vco)  # ed (id 3) editor -> editor? ensure exists
+        _, users = req(self.base, "GET", "/api/users", token=self.vco)
         ed = next(u for u in users["users"] if u["username"] == "ed")
         code, _ = req(self.base, "PUT", f"/api/users/{ed['id']}",
-                      {"role": "viewer"}, self.admin)
+                      {"role": "operator"}, self.vco)
         self.assertEqual(code, 200)
         code, _ = req(self.base, "GET", "/api/me", token=self.editor)
         self.assertEqual(code, 401)  # old token dead after role change
         # password reset revokes sessions too
         _, lv = req(self.base, "POST", "/api/login",
-                    {"username": "vic", "password": "viewer-pass-1"})
+                    {"username": "vic", "password": "operator-pass-1"})
         code, _ = req(self.base, "PUT", f"/api/users/{2}",
-                      {"password": "viewer-pass-2"}, self.admin)
+                      {"password": "operator-pass-2"}, self.vco)
         self.assertEqual(code, 200)
         code, _ = req(self.base, "GET", "/api/me", token=lv["token"])
         self.assertEqual(code, 401)
-        # the last Admin cannot be demoted (boss is the only admin)
-        _, users = req(self.base, "GET", "/api/users", token=self.admin)
+        # the last VCO cannot be demoted (boss is the only vco)
+        _, users = req(self.base, "GET", "/api/users", token=self.vco)
         boss = next(u for u in users["users"] if u["username"] == "boss")
         code, _ = req(self.base, "PUT", f"/api/users/{boss['id']}",
-                      {"role": "viewer"}, self.admin)
+                      {"role": "operator"}, self.vco)
         self.assertEqual(code, 400)
         # expired session is rejected
         conn = sky.connect(sky.Handler.db_path)
         conn.execute("UPDATE sessions SET expires_at='2000-01-01T00:00:00+00:00'")
         conn.commit()
         conn.close()
-        code, _ = req(self.base, "GET", "/api/me", token=self.admin)
+        code, _ = req(self.base, "GET", "/api/me", token=self.vco)
         self.assertEqual(code, 401)
 
     # ---- item 9: audit correctness
     def test_audit_correctness(self):
         _, v = self.add_vehicle(self.editor, notes="orig")
         vid = v["vehicle"]["id"]
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         before = next(x for x in fleet["vehicles"] if x["id"] == vid)
-        _, log = req(self.base, "GET", "/api/audit", token=self.viewer)
+        _, log = req(self.base, "GET", "/api/audit", token=self.operator)
         n_audit = len(log["audit"])
         # no-op PUT: no audit rows, updated_by/at untouched
         code, _ = req(self.base, "PUT", f"/api/vehicles/{vid}",
                       {"notes": "orig", "status": "FMC"}, self.editor)
         self.assertEqual(code, 200)
-        _, log = req(self.base, "GET", "/api/audit", token=self.viewer)
+        _, log = req(self.base, "GET", "/api/audit", token=self.operator)
         self.assertEqual(len(log["audit"]), n_audit)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         after = next(x for x in fleet["vehicles"] if x["id"] == vid)
         self.assertEqual(after["updated_at"], before["updated_at"])
         # authorization audit carries real old -> new
@@ -511,19 +512,19 @@ class FixPassTests(ApiTests):
         req(self.base, "POST", "/api/authorizations",
             {"unit": "14 ASOS", "vehicle_type": "HMMWV", "authorized": 8},
             self.editor)
-        _, log = req(self.base, "GET", "/api/audit", token=self.viewer)
+        _, log = req(self.base, "GET", "/api/audit", token=self.operator)
         auth_rows = [a for a in log["audit"] if a["action"] == "authorization"]
         self.assertTrue(any(a["old_value"] == "5" and a["new_value"] == "8"
                             for a in auth_rows))
         # account update audit carries old -> new
-        _, users = req(self.base, "GET", "/api/users", token=self.admin)
+        _, users = req(self.base, "GET", "/api/users", token=self.vco)
         vic = next(u for u in users["users"] if u["username"] == "vic")
         req(self.base, "PUT", f"/api/users/{vic['id']}",
-            {"role": "editor"}, self.admin)
-        # (vic's own session was revoked by that role change — use admin's)
-        _, log = req(self.base, "GET", "/api/audit", token=self.admin)
+            {"role": "editor"}, self.vco)
+        # (vic's own session was revoked by that role change — use vco's)
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
         self.assertTrue(any(a["action"] == "account" and a["field"] == "role"
-                            and a["old_value"] == "viewer"
+                            and a["old_value"] == "operator"
                             and a["new_value"] == "editor"
                             for a in log["audit"]))
         # deleting a vehicle closes its open conflicts (audited)
@@ -548,7 +549,7 @@ class FixPassTests(ApiTests):
         self.add_vehicle(self.editor, bumper="CSV-1",
                          notes="=2+5 dangerous", location="@SUM(A1:A9)")
         code, body = req_raw(self.base, "GET", "/api/export.csv",
-                             b"", token=self.viewer)
+                             b"", token=self.operator)
         self.assertEqual(code, 200)
         text = body["_text"]
         self.assertIn("'=2+5 dangerous", text)
@@ -563,16 +564,16 @@ class FixPassTests(ApiTests):
         code, r2 = req(self.base, "POST", "/api/vehicles", body, self.editor)
         self.assertEqual(code, 200)
         self.assertEqual(r1["vehicle"]["id"], r2["vehicle"]["id"])
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         self.assertEqual(
             len([v for v in fleet["vehicles"] if v["bumper"] == "OP-1"]), 1)
 
     # ---- item 16 (server half): snapshot carries includes_demo per unit
     def test_snapshot_includes_demo_flags(self):
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         self.assertFalse(any(u["includes_demo"] for u in fleet["units"]))
-        req(self.base, "POST", "/api/demo/load", {}, self.admin)
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        req(self.base, "POST", "/api/demo/load", {}, self.vco)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         grp = fleet["group"]                        # v1.1: separate entry
         self.assertTrue(grp["includes_demo"])
         self.assertTrue(all(u["includes_demo"] for u in fleet["units"]
@@ -606,7 +607,7 @@ def _parallel(n, fn):
 
 
 class FixPass2Tests(ApiTests):
-    """Inherits ApiTests.setUp (fresh admin/editor/viewer per test)."""
+    """Inherits ApiTests.setUp (fresh vco/editor/operator per test)."""
 
     def _db_count(self, sql, args=()):
         conn = sky.connect(sky.Handler.db_path)
@@ -699,7 +700,7 @@ class FixPass2Tests(ApiTests):
                                 bumper="CF2-" + uuid.uuid4().hex[:8])
         vid = v["vehicle"]["id"]
         req(self.base, "PUT", f"/api/vehicles/{vid}",
-            {"status": "PMC", "base_status": "FMC"}, self.admin)
+            {"status": "PMC", "base_status": "FMC"}, self.vco)
         _, r = req(self.base, "PUT", f"/api/vehicles/{vid}",
                    {"status": "NMC", "base_status": "FMC"}, self.editor)
         return vid, r["conflict"]["id"]
@@ -722,7 +723,7 @@ class FixPass2Tests(ApiTests):
         conn.close()
         self.assertEqual(row["resolved"], 1)
         # winner's action ("apply") is what the vehicle now shows
-        _, fleet = req(self.base, "GET", "/api/fleet", token=self.viewer)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
         veh = next(x for x in fleet["vehicles"] if x["id"] == vid)
         self.assertEqual(veh["status"], "NMC")
 
@@ -744,7 +745,7 @@ class FixPass2Tests(ApiTests):
             # second request on the SAME persistent connection must come
             # back as clean JSON, not corrupted by the leftover body
             conn.request("GET", "/api/fleet",
-                         headers={"Authorization": "Bearer " + self.viewer})
+                         headers={"Authorization": "Bearer " + self.operator})
             resp2 = conn.getresponse()
             payload2 = resp2.read()
             self.assertEqual(resp2.status, 200)
@@ -798,7 +799,7 @@ class V11Tests(ApiTests):
                  {"unit": "18 ASOG", "vehicle_type": "JLTV", "authorized": 5})
         code, _ = self.add_vehicle(self.editor)  # 14 ASOS FMC default
         self.assertEqual(code, 201)
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         asog = next(u for u in snap["units"] if u["unit"] == "18 ASOG")
         # the ASOG unit entry is its OWN fleet now
         self.assertEqual((asog["on_hand"], asog["fmc"], asog["pmc"],
@@ -820,7 +821,7 @@ class V11Tests(ApiTests):
         code, _ = self.add_vehicle(self.editor, unit="18 ASOG", bumper="S-1")
         self.assertEqual(code, 409)  # duplicate within ASOG
         # update an ASOG vehicle's unit to a squadron and back
-        _, fleet = self.req(self.viewer, "GET", "/api/fleet")
+        _, fleet = self.req(self.operator, "GET", "/api/fleet")
         hq = next(v for v in fleet["vehicles"] if v["unit"] == "18 ASOG")
         code, body = self.req(self.editor, "PUT", f"/api/vehicles/{hq['id']}",
                               {"unit": "20 ASOS"})
@@ -832,11 +833,11 @@ class V11Tests(ApiTests):
                 self.editor, "POST", "/api/authorizations",
                 {"unit": unit, "vehicle_type": "HMMWV", "authorized": 7})
             self.assertEqual(code, 200, (unit, body))
-        code, _ = self.req(self.viewer, "POST", "/api/authorizations",
+        code, _ = self.req(self.operator, "POST", "/api/authorizations",
                            {"unit": "18 ASOG", "vehicle_type": "X",
                             "authorized": 1})
-        self.assertEqual(code, 403)  # viewers stay read-only
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        self.assertEqual(code, 403)  # operators stay read-only
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         for unit in sky.UNIT_NAMES:
             entry = next(a for a in snap["authorizations"]
                          if a["unit"] == unit)
@@ -852,8 +853,8 @@ class V11Tests(ApiTests):
         code, utc = self.mk_utc(self.editor)
         self.assertEqual(code, 201, utc)
         uid = utc["utc"]["id"]
-        # viewers cannot create or modify UTCs
-        self.assertEqual(self.mk_utc(self.viewer, code="ZZZ")[0], 403)
+        # operators cannot create or modify UTCs
+        self.assertEqual(self.mk_utc(self.operator, code="ZZZ")[0], 403)
         # duplicate code in the same unit -> 409; same code elsewhere ok
         self.assertEqual(self.mk_utc(self.editor)[0], 409)
         self.assertEqual(self.mk_utc(self.editor, unit="15 ASOS")[0], 201)
@@ -871,7 +872,7 @@ class V11Tests(ApiTests):
         code, _ = self.req(self.editor, "POST", f"/api/utcs/{uid}/vehicles",
                            {"vehicle_id": 999999})
         self.assertEqual(code, 400)
-        code, _ = self.req(self.viewer, "POST", f"/api/utcs/{uid}/vehicles",
+        code, _ = self.req(self.operator, "POST", f"/api/utcs/{uid}/vehicles",
                            {"vehicle_id": v1["vehicle"]["id"]})
         self.assertEqual(code, 403)
         # a vehicle may sit in MULTIPLE UTCs
@@ -882,7 +883,7 @@ class V11Tests(ApiTests):
                            {"vehicle_id": v1["vehicle"]["id"]})
         self.assertEqual(code, 200)
         # snapshot carries UTCs + membership for offline viewing
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         u = next(x for x in snap["utcs"] if x["id"] == uid)
         self.assertEqual(sorted(u["vehicle_ids"]),
                          sorted([v1["vehicle"]["id"], v2["vehicle"]["id"]]))
@@ -898,13 +899,13 @@ class V11Tests(ApiTests):
         # deleting a VEHICLE drops its memberships
         code, _ = self.req(self.editor, "DELETE", f"/api/vehicles/{v1['vehicle']['id']}")
         self.assertEqual(code, 200)
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         u = next(x for x in snap["utcs"] if x["id"] == uid)
         self.assertEqual(u["vehicle_ids"], [])
         # deleting the UTC keeps the vehicles
         code, _ = self.req(self.editor, "DELETE", f"/api/utcs/{uid}")
         self.assertEqual(code, 200)
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         self.assertFalse(any(x["id"] == uid for x in snap["utcs"]))
         self.assertTrue(any(v["bumper"] == "B-2" for v in snap["vehicles"]))
         acts = {a["action"] for a in audit_actions()}
@@ -1026,7 +1027,7 @@ class ImportTests(ApiTests):
         code, res = self.confirm(self.editor, "14 ASOS", "fleet.xlsx", rows)
         self.assertEqual(code, 201, res)
         self.assertEqual(res["created_count"], 3)
-        _, fleet = self.req(self.viewer, "GET", "/api/fleet")
+        _, fleet = self.req(self.operator, "GET", "/api/fleet")
         got = {v["bumper"]: v for v in fleet["vehicles"]}
         self.assertEqual(got["IMP-1"]["type"], "JLTV")
         self.assertEqual(got["IMP-2"]["location"], "Bay 4")
@@ -1054,7 +1055,7 @@ class ImportTests(ApiTests):
         code, res = self.confirm(self.editor, "15 ASOS", "v.xlsx",
                                  [r])
         self.assertEqual(res["created_count"], 1)
-        _, fleet = self.req(self.viewer, "GET", "/api/fleet")
+        _, fleet = self.req(self.operator, "GET", "/api/fleet")
         v = next(x for x in fleet["vehicles"] if x["bumper"] == "V-1")
         self.assertEqual(v["notes"], "Needs tires")
         self.assertEqual(v["mileage"], 12500)
@@ -1085,7 +1086,7 @@ class ImportTests(ApiTests):
         rows = [r for r in prev["rows"] if r["ok"]]
         code, res = self.confirm(self.editor, "14 ASOS", "d.xlsx", rows)
         self.assertEqual(res["created_count"], 2)  # NEW-1 + BAD-1 only
-        _, fleet = self.req(self.viewer, "GET", "/api/fleet")
+        _, fleet = self.req(self.operator, "GET", "/api/fleet")
         orig = next(v for v in fleet["vehicles"] if v["bumper"] == "DUP-1")
         self.assertEqual(orig["type"], "OriginalType")  # NOT overwritten
 
@@ -1106,10 +1107,10 @@ class ImportTests(ApiTests):
         # wrong extension -> 400
         code, _ = self.preview(self.editor, "14 ASOS", "fleet.txt", b"a,b")
         self.assertEqual(code, 400)
-        # viewers: 403 on BOTH steps
-        code, _ = self.preview(self.viewer, "14 ASOS", "f.xlsx", raw)
+        # operators: 403 on BOTH steps
+        code, _ = self.preview(self.operator, "14 ASOS", "f.xlsx", raw)
         self.assertEqual(code, 403)
-        code, _ = self.confirm(self.viewer, "14 ASOS", "f.xlsx",
+        code, _ = self.confirm(self.operator, "14 ASOS", "f.xlsx",
                                [{"bumper": "X-1"}])
         self.assertEqual(code, 403)
 
@@ -1136,7 +1137,7 @@ class ImportTests(ApiTests):
         code, res = self.confirm(self.editor, "18 ASOG", "hq.xlsx",
                                  prev["rows"])
         self.assertEqual(res["created_count"], 1)
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         asog = next(u for u in snap["units"] if u["unit"] == "18 ASOG")
         self.assertEqual(asog["on_hand"], 1)
         self.assertEqual(snap["group"]["on_hand"], 1)
@@ -1212,7 +1213,7 @@ class V11FixPassTests(ApiTests):
                 self.editor, bumper=f"TIE-{i}",
                 status="FMC" if i == 0 else "NMC")
             self.assertEqual(code, 201)
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         u14 = next(u for u in snap["units"] if u["unit"] == "14 ASOS")
         self.assertEqual(u14["mc_rate"], 6.3)
         self.assertEqual(snap["group"]["mc_rate"], 6.3)
@@ -1245,7 +1246,7 @@ class V11FixPassTests(ApiTests):
                               {"code": "zz2"})
         self.assertEqual(code, 200, body)
         self.assertEqual(body["utc"]["code"], "ZZ2")  # update normalizes
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         codes = sorted(u["code"] for u in snap["utcs"]
                        if u["unit"] == "14 ASOS")
         self.assertEqual(codes, ["ABC1", "ZZ2"])
@@ -1340,7 +1341,7 @@ class V111Tests(ApiTests):
         return req(self.base, method, path, body, token)
 
     def snap(self):
-        _, snap = self.req(self.viewer, "GET", "/api/fleet")
+        _, snap = self.req(self.operator, "GET", "/api/fleet")
         return snap
 
     def mk_auth(self, token, unit="14 ASOS", typ="JLTV", n=10):
@@ -1366,7 +1367,7 @@ class V111Tests(ApiTests):
         # group drops by EXACTLY the deleted row's count (13 - 10)
         self.assertEqual(snap["group"]["authorizations"], 3)
         # audit records who, which unit/type, and the count removed
-        _, log = req(self.base, "GET", "/api/audit", token=self.viewer)
+        _, log = req(self.base, "GET", "/api/audit", token=self.operator)
         dels = [a for a in log["audit"]
                 if a["action"] == "authorization"
                 and "(deleted)" in a["detail"]]
@@ -1381,9 +1382,9 @@ class V111Tests(ApiTests):
 
     def test_delete_roles_and_unknown_ids(self):
         a = self.mk_auth(self.editor)
-        code, _ = self.req(self.viewer, "DELETE",
+        code, _ = self.req(self.operator, "DELETE",
                            f"/api/authorizations/{a['id']}")
-        self.assertEqual(code, 403)  # viewers are read-only
+        self.assertEqual(code, 403)  # operators are read-only
         code, _ = req(self.base, "DELETE",
                       f"/api/authorizations/{a['id']}")  # no token
         self.assertEqual(code, 401)
@@ -1393,9 +1394,9 @@ class V111Tests(ApiTests):
         code, _ = self.req(self.editor, "DELETE",
                            "/api/authorizations/not-an-id")
         self.assertEqual(code, 404)  # non-integer id
-        code, _ = self.req(self.admin, "DELETE",
+        code, _ = self.req(self.vco, "DELETE",
                            f"/api/authorizations/{a['id']}")
-        self.assertEqual(code, 200)  # admin can too
+        self.assertEqual(code, 200)  # vco can too
         code, _ = self.req(self.editor, "DELETE",
                            f"/api/authorizations/{a['id']}")
         self.assertEqual(code, 404)  # second delete of the same id
@@ -1428,7 +1429,7 @@ class V111Tests(ApiTests):
             self.assertEqual(snap["group"]["authorizations"], n)
 
     def test_demo_authorization_deletable_and_demo_remove_still_works(self):
-        code, _ = req(self.base, "POST", "/api/demo/load", {}, self.admin)
+        code, _ = req(self.base, "POST", "/api/demo/load", {}, self.vco)
         self.assertEqual(code, 200)
         snap = self.snap()
         demo_auths = [a for a in snap["authorizations"] if a["is_demo"]]
@@ -1444,8 +1445,874 @@ class V111Tests(ApiTests):
         self.assertEqual(snap["group"]["authorizations"],
                          before - victim["authorized"])
         # the demo-remove flow still clears the rest cleanly afterwards
-        code, _ = req(self.base, "POST", "/api/demo/remove", {}, self.admin)
+        code, _ = req(self.base, "POST", "/api/demo/remove", {}, self.vco)
         self.assertEqual(code, 200)
         snap = self.snap()
         self.assertEqual(snap["authorizations"], [])
         self.assertEqual(snap["vehicles"], [])
+
+
+# ---------------------------------------------------------------- v1.2
+def req_bytes(base, method, path, token=None):
+    """Raw (non-JSON) request for the photo GET endpoints."""
+    r = urllib.request.Request(base + path, method=method)
+    if token:
+        r.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(r) as resp:
+            return resp.status, resp.headers.get_content_type(), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get_content_type(), e.read()
+
+
+def photo_url(mime, payload):
+    return "data:" + mime + ";base64," + base64.b64encode(payload).decode()
+
+
+class InspectionTests(ApiTests):
+    """v1.2: AF Form 1800 operator inspections."""
+
+    def mk_vehicle(self, token=None, **kw):
+        code, v = self.add_vehicle(token or self.editor, **kw)
+        self.assertEqual(code, 201, v)
+        return v["vehicle"]
+
+    def insp_body(self, vid, **kw):
+        body = {"vehicle_id": vid, "month_year": "October 2026",
+                "mileage_hours": 5000, "tire_front": "80",
+                "tire_rear": "80",
+                "items": [
+                    {"item_no": 1, "applies": True, "result": "pass",
+                     "comment": ""},
+                    {"item_no": 2, "applies": True, "result": "fail",
+                     "comment": "oil leak at filter"},
+                    {"item_no": 3, "applies": False, "comment": ""},
+                    {"item_no": "other", "text": "Winch cable fray",
+                     "applies": True, "result": "fail",
+                     "comment": "cable strands showing"}]}
+        body.update(kw)
+        return body
+
+    def submit(self, token, body):
+        return req(self.base, "POST", "/api/inspections", body, token)
+
+    def test_operator_submits_inspection(self):
+        v = self.mk_vehicle()
+        code, r = self.submit(self.operator, self.insp_body(v["id"]))
+        self.assertEqual(code, 201, r)
+        insp = r["inspection"]
+        self.assertEqual(insp["status"], "submitted")
+        self.assertEqual(insp["operator"], "Vic Operator")
+        self.assertEqual(insp["unit"], "14 ASOS")
+        self.assertEqual(insp["bumper"], "A-1")
+        self.assertEqual(len(r["items"]), 4)
+        # numbered items store the official fixed text
+        self.assertEqual(r["items"][0]["item_text"], sky.INSPECTION_ITEMS[0])
+        # failed items become open discrepancies (numbered + other)
+        self.assertEqual(len(r["discrepancies"]), 2)
+        d2 = next(d for d in r["discrepancies"] if d["item_no"] == 2)
+        self.assertEqual(d2["status"], "open")
+        self.assertEqual(d2["description"], "oil leak at filter")
+        self.assertEqual(d2["miles_hours"], 5000)
+        dother = next(d for d in r["discrepancies"]
+                      if d["item_no"] is None)
+        self.assertEqual(dother["description"], "cable strands showing")
+        # vehicle status is NEVER changed by an inspection
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
+        veh = next(x for x in fleet["vehicles"] if x["id"] == v["id"])
+        self.assertEqual(veh["status"], "FMC")
+        self.assertEqual(veh["mileage"], 5000)
+
+    def test_editor_can_submit(self):
+        v = self.mk_vehicle()
+        code, _ = self.submit(self.editor, self.insp_body(v["id"]))
+        self.assertEqual(code, 201)
+
+    def test_vco_review_flow_and_gates(self):
+        v = self.mk_vehicle()
+        _, r = self.submit(self.operator, self.insp_body(v["id"]))
+        iid = r["inspection"]["id"]
+        disc = r["discrepancies"][0]["id"]
+        code, _ = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {}, self.operator)
+        self.assertEqual(code, 403)
+        code, _ = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {}, self.editor)
+        self.assertEqual(code, 403)
+        code, _ = req(self.base, "POST", "/api/inspections/99999/review",
+                      {}, self.vco)
+        self.assertEqual(code, 404)
+        code, r = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {"dispositions": [{"discrepancy_id": disc,
+                                         "status": "corrected"}]}, self.vco)
+        self.assertEqual(code, 200, r)
+        self.assertEqual(r["inspection"]["status"], "reviewed")
+        self.assertEqual(r["inspection"]["reviewed_by"], "Boss")
+        code, _ = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {}, self.vco)
+        self.assertEqual(code, 409)  # double review
+        # disposition landed on the discrepancy
+        _, full = req(self.base, "GET", f"/api/inspections/{iid}",
+                      token=self.vco)
+        d = next(x for x in full["discrepancies"] if x["id"] == disc)
+        self.assertEqual(d["status"], "corrected")
+
+    def test_review_validation_and_no_disposition_review(self):
+        v = self.mk_vehicle()
+        _, r = self.submit(self.operator, self.insp_body(v["id"]))
+        iid = r["inspection"]["id"]
+        disc = r["discrepancies"][0]["id"]
+        code, _ = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {"dispositions": [{"discrepancy_id": disc,
+                                         "status": "open"}]}, self.vco)
+        self.assertEqual(code, 400)  # "open" is not a disposition
+        code, _ = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {"dispositions": [{"discrepancy_id": 99999,
+                                         "status": "corrected"}]}, self.vco)
+        self.assertEqual(code, 400)  # foreign discrepancy
+        code, r = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {}, self.vco)
+        self.assertEqual(code, 200, r)  # review without dispositions is fine
+        _, full = req(self.base, "GET", f"/api/inspections/{iid}",
+                      token=self.vco)
+        self.assertEqual(full["inspection"]["status"], "reviewed")
+        self.assertEqual(full["discrepancies"][0]["status"], "open")
+
+    def test_mileage_update_and_audit(self):
+        v = self.mk_vehicle()  # mileage 100
+        code, _ = self.submit(self.operator, self.insp_body(v["id"]))
+        self.assertEqual(code, 201)
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
+        acts = [(a["action"], a["field"], a["old_value"], a["new_value"])
+                for a in log["audit"]]
+        self.assertIn(("update", "mileage", "100", "5000"), acts)
+        self.assertTrue(any(a[0] == "inspection" for a in acts))
+        # no mileage given -> vehicle mileage untouched
+        v2 = self.mk_vehicle(bumper="A-2")
+        body = self.insp_body(v2["id"])
+        del body["mileage_hours"]
+        code, _ = self.submit(self.operator, body)
+        self.assertEqual(code, 201)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
+        veh = next(x for x in fleet["vehicles"] if x["id"] == v2["id"])
+        self.assertEqual(veh["mileage"], 100)
+
+    def test_validation_400s(self):
+        v = self.mk_vehicle()
+        base = self.insp_body(v["id"])
+        cases = []
+        b = dict(base); b["items"] = []
+        cases.append(b)  # empty items
+        b = dict(base)
+        b["items"] = [{"item_no": 36, "applies": True, "result": "pass"}]
+        cases.append(b)  # item_no out of range
+        b = dict(base)
+        b["items"] = [{"item_no": 1, "applies": True}]
+        cases.append(b)  # result missing when applies
+        b = dict(base)
+        b["items"] = [{"item_no": 1, "applies": True, "result": "ok"}]
+        cases.append(b)  # bad result
+        b = dict(base)
+        b["items"] = [{"item_no": 1, "applies": True, "result": "pass"},
+                      {"item_no": 1, "applies": True, "result": "pass"}]
+        cases.append(b)  # duplicate numbered item
+        b = dict(base)
+        b["items"] = [{"item_no": "other", "text": "x" * 121,
+                       "applies": True, "result": "pass"}]
+        cases.append(b)  # other text too long
+        b = dict(base)
+        b["items"] = [{"item_no": "other", "text": f"O{i}",
+                       "applies": True, "result": "pass"} for i in range(11)]
+        cases.append(b)  # more than 10 others
+        b = dict(base)
+        b["items"] = [{"item_no": 1, "applies": True, "result": "pass",
+                       "comment": "x" * 2001}]
+        cases.append(b)  # comment too long
+        b = dict(base); b["mileage_hours"] = -1
+        cases.append(b)
+        b = dict(base); del b["month_year"]
+        cases.append(b)
+        for body in cases:
+            code, r = self.submit(self.operator, body)
+            self.assertEqual(code, 400, body)
+        # unauthenticated -> 401, unknown vehicle -> 404
+        code, _ = req(self.base, "POST", "/api/inspections", base)
+        self.assertEqual(code, 401)
+        code, _ = self.submit(self.operator, self.insp_body(99999))
+        self.assertEqual(code, 404)
+
+    def test_list_filters_and_order(self):
+        v1 = self.mk_vehicle(bumper="F-1")
+        v2 = self.mk_vehicle(bumper="F-2", unit="15 ASOS")
+        _, r1 = self.submit(self.operator, self.insp_body(v1["id"]))
+        _, r2 = self.submit(self.operator, self.insp_body(v2["id"]))
+        iid1 = r1["inspection"]["id"]
+        req(self.base, "POST", f"/api/inspections/{iid1}/review", {},
+            self.vco)
+        _, lst = req(self.base, "GET", "/api/inspections", token=self.operator)
+        self.assertEqual(len(lst["inspections"]), 2)
+        # unreviewed first
+        self.assertEqual(lst["inspections"][0]["status"], "submitted")
+        _, lst = req(self.base, "GET", "/api/inspections?reviewed=false",
+                     token=self.operator)
+        self.assertEqual([i["id"] for i in lst["inspections"]],
+                         [r2["inspection"]["id"]])
+        _, lst = req(self.base, "GET", "/api/inspections?reviewed=true",
+                     token=self.operator)
+        self.assertEqual([i["id"] for i in lst["inspections"]], [iid1])
+        _, lst = req(self.base, "GET",
+                     f"/api/inspections?vehicle_id={v2['id']}",
+                     token=self.operator)
+        self.assertEqual(len(lst["inspections"]), 1)
+        _, lst = req(self.base, "GET", "/api/inspections?unit=15%20ASOS",
+                     token=self.operator)
+        self.assertEqual(len(lst["inspections"]), 1)
+        code, _ = req(self.base, "GET", "/api/inspections?reviewed=maybe",
+                      token=self.operator)
+        self.assertEqual(code, 400)
+        code, _ = req(self.base, "GET", "/api/inspections/99999",
+                      token=self.operator)
+        self.assertEqual(code, 404)
+
+    def test_detail_json_has_form_content(self):
+        # the printable form is client-side (see frontend_check): the
+        # server exposes the detail JSON the form renders from
+        v = self.mk_vehicle()
+        _, r = self.submit(self.operator, self.insp_body(v["id"]))
+        iid = r["inspection"]["id"]
+        _, full = req(self.base, "GET", f"/api/inspections/{iid}",
+                      token=self.operator)
+        self.assertEqual(full["inspection"]["bumper"], "A-1")
+        self.assertEqual(full["inspection"]["month_year"], "October 2026")
+        self.assertEqual(full["items"][1]["comment"], "oil leak at filter")
+        self.assertEqual(full["discrepancies"][0]["description"],
+                         "oil leak at filter")
+
+
+class VcoGuardTests(ApiTests):
+    """v1.2: the last VCO cannot be demoted."""
+
+    def test_last_vco_guard(self):
+        _, users = req(self.base, "GET", "/api/users", token=self.vco)
+        boss = next(u for u in users["users"] if u["username"] == "boss")
+        code, _ = req(self.base, "PUT", f"/api/users/{boss['id']}",
+                      {"role": "operator"}, self.vco)
+        self.assertEqual(code, 400)
+        _, users = req(self.base, "GET", "/api/users", token=self.vco)
+        ed = next(u for u in users["users"] if u["username"] == "ed")
+        code, _ = req(self.base, "PUT", f"/api/users/{ed['id']}",
+                      {"role": "vco"}, self.vco)
+        self.assertEqual(code, 200)
+        # (promoting ed revoked ed's sessions, not boss's)
+        code, _ = req(self.base, "PUT", f"/api/users/{boss['id']}",
+                      {"role": "operator"}, self.vco)
+        self.assertEqual(code, 200)
+
+
+class LegacyMigrationTests(unittest.TestCase):
+    """v1.2: databases created before the rename migrate on boot."""
+
+    def test_legacy_roles_migrate_and_audit_text_untouched(self):
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "legacy.db")
+        conn = sky.connect(db)
+        sky.init_db(conn)
+        conn.execute(
+            "INSERT INTO users(username, display_name, password_hash, unit,"
+            " role, created_at) VALUES (?,?,?,?,?,?)",
+            ("oldvic", "Old Vic", sky.hash_password("old-pass-123"),
+             "14 ASOS", "viewer", "2026-01-01T00:00:00+00:00"))
+        conn.execute(
+            "INSERT INTO users(username, display_name, password_hash, unit,"
+            " role, created_at) VALUES (?,?,?,?,?,?)",
+            ("oldboss", "Old Boss", sky.hash_password("old-pass-123"),
+             "18 ASOG", "admin", "2026-01-01T00:00:00+00:00"))
+        conn.execute(
+            "INSERT INTO audit(vehicle_id, actor, action, detail, created_at)"
+            " VALUES (NULL, 'setup', 'account', 'created oldvic (viewer)',"
+            " '2026-01-01T00:00:00+00:00')")
+        conn.commit()
+        sky.init_db(conn)  # second boot migrates
+        rows = {r["username"]: r["role"] for r in conn.execute(
+            "SELECT username, role FROM users")}
+        self.assertEqual(rows["oldvic"], "operator")
+        self.assertEqual(rows["oldboss"], "vco")
+        detail = conn.execute(
+            "SELECT detail FROM audit WHERE action='account'").fetchone()
+        self.assertEqual(detail["detail"], "created oldvic (viewer)")
+        conn.close()
+
+
+class VehiclePhotoTests(ApiTests):
+    """v1.2: one photo per vehicle, any signed-in role."""
+
+    def test_operator_attach_get_replace_remove(self):
+        _, v = self.add_vehicle(self.editor)
+        vid = v["vehicle"]["id"]
+        # operator may attach (any signed-in role)
+        code, r = req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+                      {"image": photo_url("image/jpeg", b"JPEG-ONE")},
+                      self.operator)
+        self.assertEqual(code, 200, r)
+        self.assertTrue(r["photo"])
+        status, ctype, raw = req_bytes(self.base, "GET",
+                                       f"/api/vehicles/{vid}/photo",
+                                       self.operator)
+        self.assertEqual(status, 200)
+        self.assertEqual(ctype, "image/jpeg")
+        self.assertEqual(raw, b"JPEG-ONE")
+        # fleet payload carries the flag only, never bytes
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
+        veh = next(x for x in fleet["vehicles"] if x["id"] == vid)
+        self.assertEqual(veh["photo"], 1)
+        self.assertNotIn("photo_mime", veh)
+        # replace (mime changes)
+        code, _ = req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+                      {"image": photo_url("image/png", b"PNG-TWO")},
+                      self.editor)
+        self.assertEqual(code, 200)
+        status, ctype, raw = req_bytes(self.base, "GET",
+                                       f"/api/vehicles/{vid}/photo",
+                                       self.operator)
+        self.assertEqual(ctype, "image/png")
+        self.assertEqual(raw, b"PNG-TWO")
+        # audit rows for attach + replace
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
+        photo_rows = [a for a in log["audit"] if a["action"] == "photo"]
+        self.assertTrue(any("attached" in a["detail"] for a in photo_rows))
+        self.assertTrue(any("replaced" in a["detail"] for a in photo_rows))
+        # remove (operator may remove too)
+        code, r = req(self.base, "DELETE", f"/api/vehicles/{vid}/photo",
+                      token=self.operator)
+        self.assertEqual(code, 200)
+        status, _, _ = req_bytes(self.base, "GET",
+                                 f"/api/vehicles/{vid}/photo", self.operator)
+        self.assertEqual(status, 404)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
+        veh = next(x for x in fleet["vehicles"] if x["id"] == vid)
+        self.assertEqual(veh["photo"], 0)
+
+    def test_photo_gates_and_caps(self):
+        _, v = self.add_vehicle(self.editor)
+        vid = v["vehicle"]["id"]
+        code, _ = req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+                      {"image": photo_url("image/jpeg", b"x")})
+        self.assertEqual(code, 401)
+        status, _, _ = req_bytes(self.base, "GET",
+                                 f"/api/vehicles/{vid}/photo")
+        self.assertEqual(status, 401)
+        code, _ = req(self.base, "POST", "/api/vehicles/99999/photo",
+                      {"image": photo_url("image/jpeg", b"x")}, self.operator)
+        self.assertEqual(code, 404)
+        code, _ = req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+                      {"image": "not-a-data-url"}, self.operator)
+        self.assertEqual(code, 400)
+        code, _ = req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+                      {"image": photo_url("image/bmp", b"x")}, self.operator)
+        self.assertEqual(code, 400)
+        # oversize: data URL past the 3 MB cap -> 413
+        big = "data:image/jpeg;base64," + base64.b64encode(
+            b"x" * 2400000).decode()
+        self.assertGreater(len(big), 3 * 1024 * 1024)
+        code, _ = req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+                      {"image": big}, self.operator)
+        self.assertEqual(code, 413)
+
+
+class DiscrepancyPhotoTests(ApiTests):
+    """v1.2: up to 4 photos per discrepancy."""
+
+    def mk_insp(self, bumper):
+        _, v = self.add_vehicle(self.editor, bumper=bumper)
+        body = {"vehicle_id": v["vehicle"]["id"],
+                "month_year": "October 2026",
+                "items": [{"item_no": 2, "applies": True, "result": "fail",
+                           "comment": "leak"}]}
+        code, r = req(self.base, "POST", "/api/inspections", body,
+                      self.operator)
+        self.assertEqual(code, 201, r)
+        return r["inspection"]["id"], r["discrepancies"][0]["id"]
+
+    def test_attach_list_get_and_cap(self):
+        iid, did = self.mk_insp("DP-1")
+        url = f"/api/inspections/{iid}/discrepancies/{did}/photos"
+        for i in range(4):
+            code, r = req(self.base, "POST", url,
+                          {"image": photo_url("image/jpeg",
+                                              f"P{i}".encode())},
+                          self.operator)
+            self.assertEqual(code, 201, r)
+            self.assertIn("url", r)
+        code, _ = req(self.base, "POST", url,
+                      {"image": photo_url("image/jpeg", b"P4")},
+                      self.operator)
+        self.assertEqual(code, 409)  # 4-photo cap
+        # detail JSON carries URLs/counts, never bytes
+        _, full = req(self.base, "GET", f"/api/inspections/{iid}",
+                      token=self.operator)
+        disc = full["discrepancies"][0]
+        self.assertEqual(len(disc["photos"]), 4)
+        for p in disc["photos"]:
+            self.assertTrue(p["url"].startswith(
+                f"/api/inspections/{iid}/discrepancies/{did}/photos/"))
+            status, ctype, raw = req_bytes(self.base, "GET", p["url"],
+                                           self.operator)
+            self.assertEqual(status, 200)
+            self.assertEqual(ctype, "image/jpeg")
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
+        self.assertTrue(any(a["action"] == "inspection-photo"
+                            for a in log["audit"]))
+
+    def test_photo_404s(self):
+        iid, did = self.mk_insp("DP-1")
+        code, _ = req(self.base, "POST",
+                      f"/api/inspections/99999/discrepancies/{did}/photos",
+                      {"image": photo_url("image/jpeg", b"x")}, self.operator)
+        self.assertEqual(code, 404)
+        code, _ = req(self.base, "POST",
+                      f"/api/inspections/{iid}/discrepancies/99999/photos",
+                      {"image": photo_url("image/jpeg", b"x")}, self.operator)
+        self.assertEqual(code, 404)
+        iid2, did2 = self.mk_insp("DP-2")
+        code, _ = req(self.base, "POST",
+                      f"/api/inspections/{iid}/discrepancies/{did2}/photos",
+                      {"image": photo_url("image/jpeg", b"x")}, self.operator)
+        self.assertEqual(code, 404)  # did2 belongs to iid2, not iid
+        code, _ = req(self.base, "POST",
+                      f"/api/inspections/{iid}/discrepancies/{did}/photos",
+                      {"image": photo_url("image/jpeg", b"x")})
+        self.assertEqual(code, 401)
+        status, _, _ = req_bytes(
+            self.base, "GET",
+            f"/api/inspections/{iid}/discrepancies/{did}/photos/99999",
+            self.operator)
+        self.assertEqual(status, 404)
+
+
+class RetentionTests(ApiTests):
+    """v1.2: 1800 records purge 30 days after submission; the audit
+    trail and vehicle photos survive."""
+
+    def test_purge_on_list_read_keeps_audit_trail(self):
+        from datetime import datetime, timezone, timedelta
+        _, v = self.add_vehicle(self.editor)
+        vid = v["vehicle"]["id"]
+        # vehicle photo (fleet data) must survive any purge
+        req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+            {"image": photo_url("image/jpeg", b"KEEP")}, self.operator)
+        body = {"vehicle_id": vid, "month_year": "September 2026",
+                "items": [{"item_no": 2, "applies": True, "result": "fail",
+                           "comment": "old leak"}]}
+        code, r = req(self.base, "POST", "/api/inspections", body,
+                      self.operator)
+        self.assertEqual(code, 201)
+        iid = r["inspection"]["id"]
+        did = r["discrepancies"][0]["id"]
+        req(self.base, "POST",
+            f"/api/inspections/{iid}/discrepancies/{did}/photos",
+            {"image": photo_url("image/jpeg", b"OLD")}, self.operator)
+        # backdate past 30 days
+        old = (datetime.now(timezone.utc) -
+               timedelta(days=31)).isoformat(timespec="seconds")
+        conn = sky.connect(sky.Handler.db_path)
+        conn.execute("UPDATE inspections SET created_at=? WHERE id=?",
+                     (old, iid))
+        conn.commit()
+        conn.close()
+        # a fresh inspection survives the same purge run
+        _, r2 = req(self.base, "POST", "/api/inspections",
+                    {"vehicle_id": vid, "month_year": "October 2026",
+                     "items": [{"item_no": 1, "applies": True,
+                                "result": "pass"}]}, self.operator)
+        iid2 = r2["inspection"]["id"]
+        # list read triggers the purge
+        _, lst = req(self.base, "GET", "/api/inspections", token=self.vco)
+        ids = [i["id"] for i in lst["inspections"]]
+        self.assertNotIn(iid, ids)
+        self.assertIn(iid2, ids)
+        # items + discrepancies + photos are gone too
+        conn = sky.connect(sky.Handler.db_path)
+        n = conn.execute("SELECT COUNT(*) c FROM inspection_items"
+                         " WHERE inspection_id=?", (iid,)).fetchone()["c"]
+        self.assertEqual(n, 0)
+        n = conn.execute("SELECT COUNT(*) c FROM discrepancies"
+                         " WHERE inspection_id=?", (iid,)).fetchone()["c"]
+        self.assertEqual(n, 0)
+        n = conn.execute("SELECT COUNT(*) c FROM discrepancy_photos"
+                         " WHERE discrepancy_id=?", (did,)).fetchone()["c"]
+        self.assertEqual(n, 0)
+        conn.close()
+        # one purge audit row; the original submission row REMAINS
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
+        self.assertTrue(any(a["action"] == "retention" and
+                            "1 inspection(s) removed" in a["detail"]
+                            for a in log["audit"]))
+        self.assertTrue(any(a["action"] == "inspection" and
+                            "September 2026" in a["detail"]
+                            for a in log["audit"]))
+        # ...and the vehicle photo is untouched by retention
+        status, _, raw = req_bytes(self.base, "GET",
+                                   f"/api/vehicles/{vid}/photo", self.operator)
+        self.assertEqual(status, 200)
+        self.assertEqual(raw, b"KEEP")
+
+
+class V12FixPassTests(ApiTests):
+    """v1.2 fix pass: anchored routing, int64 guards, last-VCO race,
+    discrepancy-photo delete, reviewed-409, detail-read purge,
+    retention boundary + startup path."""
+
+    def mk_insp(self, bumper="FX-1"):
+        _, v = self.add_vehicle(self.editor, bumper=bumper)
+        body = {"vehicle_id": v["vehicle"]["id"],
+                "month_year": "October 2026",
+                "items": [{"item_no": 2, "applies": True, "result": "fail",
+                           "comment": "leak"}]}
+        code, r = req(self.base, "POST", "/api/inspections", body,
+                      self.operator)
+        self.assertEqual(code, 201, r)
+        return (v["vehicle"]["id"], r["inspection"]["id"],
+                r["discrepancies"][0]["id"])
+
+    def backdate(self, iid, days):
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) -
+               timedelta(days=days)).isoformat(timespec="seconds")
+        conn = sky.connect(sky.Handler.db_path)
+        conn.execute("UPDATE inspections SET created_at=? WHERE id=?",
+                     (old, iid))
+        conn.commit()
+        conn.close()
+
+    def test_route_anchoring_photo_extra_404_and_vehicle_survives(self):
+        # the live repro: DELETE /photo/extra used to fall past the
+        # photo branch into generic vehicle-delete and DELETE THE
+        # VEHICLE. Now it must 404 and change nothing.
+        _, v = self.add_vehicle(self.editor)
+        vid = v["vehicle"]["id"]
+        req(self.base, "POST", f"/api/vehicles/{vid}/photo",
+            {"image": photo_url("image/jpeg", b"KEEP")}, self.operator)
+        code, _ = req(self.base, "DELETE",
+                      f"/api/vehicles/{vid}/photo/extra", token=self.editor)
+        self.assertEqual(code, 404)
+        code, _ = req(self.base, "PUT",
+                      f"/api/vehicles/{vid}/photo/extra",
+                      {"status": "NMC"}, self.editor)
+        self.assertEqual(code, 404)
+        code, _ = req(self.base, "PUT", f"/api/vehicles/{vid}/extra",
+                      {"status": "NMC"}, self.editor)
+        self.assertEqual(code, 404)
+        # vehicle + photo both untouched
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
+        veh = next(x for x in fleet["vehicles"] if x["id"] == vid)
+        self.assertEqual(veh["status"], "FMC")
+        self.assertEqual(veh["photo"], 1)
+        status, _, raw = req_bytes(
+            self.base, "GET", f"/api/vehicles/{vid}/photo", self.operator)
+        self.assertEqual(status, 200)
+        self.assertEqual(raw, b"KEEP")
+        # the legitimate suffixed routes still work
+        code, _ = req(self.base, "DELETE", f"/api/vehicles/{vid}/photo",
+                      token=self.operator)
+        self.assertEqual(code, 200)
+        # other single-id routes are anchored too
+        code, a = req(self.base, "POST", "/api/authorizations",
+                      {"unit": "14 ASOS", "vehicle_type": "JLTV",
+                       "authorized": 3}, self.editor)
+        self.assertEqual(code, 200, a)
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
+        auth = next(x for x in fleet["authorizations"]
+                    if x["vehicle_type"] == "JLTV")
+        code, _ = req(self.base, "DELETE",
+                      f"/api/authorizations/{auth['id']}/extra",
+                      token=self.editor)
+        self.assertEqual(code, 404)
+        code, _ = req(self.base, "DELETE",
+                      f"/api/authorizations/{auth['id']}", token=self.editor)
+        self.assertEqual(code, 200)
+
+    def test_routing_nit_no_pid_photos_404(self):
+        # GET .../discrepancies/{did}/photos with no photo id used to
+        # fall through to the inspection-detail handler; now 404
+        _, iid, did = self.mk_insp()
+        code, _ = req(self.base, "GET",
+                      f"/api/inspections/{iid}/discrepancies/{did}/photos",
+                      token=self.operator)
+        self.assertEqual(code, 404)
+        # ...and the detail handler itself rejects trailing segments
+        code, _ = req(self.base, "GET", f"/api/inspections/{iid}/extra",
+                      token=self.operator)
+        self.assertEqual(code, 404)
+
+    def test_absurd_ids_never_500(self):
+        huge = 2 ** 70
+        _, v = self.add_vehicle(self.editor)
+        vid = v["vehicle"]["id"]
+        # create-inspection vehicle_id
+        code, _ = req(self.base, "POST", "/api/inspections",
+                      {"vehicle_id": huge, "month_year": "October 2026",
+                       "items": [{"item_no": 1, "applies": True,
+                                  "result": "pass"}]}, self.operator)
+        self.assertIn(code, (400, 404))
+        # list filter
+        code, _ = req(self.base, "GET",
+                      f"/api/inspections?vehicle_id={huge}",
+                      token=self.operator)
+        self.assertIn(code, (400, 404))
+        # discrepancy-photo attach path ids
+        _, iid, did = self.mk_insp()
+        code, _ = req(self.base, "POST",
+                      f"/api/inspections/{huge}/discrepancies/{did}/photos",
+                      {"image": photo_url("image/jpeg", b"x")},
+                      self.operator)
+        self.assertIn(code, (400, 404))
+        code, _ = req(self.base, "POST",
+                      f"/api/inspections/{iid}/discrepancies/{huge}/photos",
+                      {"image": photo_url("image/jpeg", b"x")},
+                      self.operator)
+        self.assertIn(code, (400, 404))
+        # discrepancy-photo GET branch ids
+        status, _, _ = req_bytes(
+            self.base, "GET",
+            f"/api/inspections/{iid}/discrepancies/{did}/photos/{huge}",
+            self.operator)
+        self.assertIn(status, (400, 404))
+        # vehicle-photo GET branch id (already guarded via _path_id)
+        status, _, _ = req_bytes(
+            self.base, "GET", f"/api/vehicles/{huge}/photo", self.operator)
+        self.assertIn(status, (400, 404))
+        # the real records are untouched by all of the above
+        _, fleet = req(self.base, "GET", "/api/fleet", token=self.operator)
+        self.assertTrue(any(x["id"] == vid for x in fleet["vehicles"]))
+
+    def test_last_vco_concurrent_demotions(self):
+        # two VCOs total (boss + one other); two barrier-aligned
+        # demotions must NOT both succeed — exactly one of the pair
+        # stays VCO. NOTE: this guards the serialized re-check;
+        # against the old check-before-transaction code it fails
+        # whenever both requests' count reads land before either
+        # write commits (the barrier makes that interleaving
+        # near-certain, but a round is timing-shaped, not a proof
+        # of the old bug).
+        # Loser outcome depends on order: if the other demotion wins
+        # first, the boss demotion sees count=1 and gets 400; if the
+        # boss self-demotion wins first, the other request gets 400
+        # from the serialized guard when it authenticated before the
+        # session revocation landed, or 401 when it authenticated
+        # after. All three are "refused"; neither may be 200, and
+        # zero VCOs must never result.
+        _, users = req(self.base, "GET", "/api/users", token=self.vco)
+        boss = next(u for u in users["users"] if u["username"] == "boss")
+        for rnd in range(3):
+            _, other = req(self.base, "POST", "/api/users",
+                           {"username": f"vco{rnd}",
+                            "password": "vco-pass-1",
+                            "display_name": f"VCO {rnd}",
+                            "unit": "18 ASOG", "role": "vco"}, self.vco)
+            other_id = other["user"]["id"]
+            # fresh boss login per round (a demoted boss loses its
+            # session to the role-change revocation)
+            _, login = req(self.base, "POST", "/api/login",
+                           {"username": "boss", "password": "vco-pass-1"})
+            boss_tok = login["token"]
+            barrier = threading.Barrier(2)
+            results = {}
+
+            def demote(key, uid):
+                barrier.wait(timeout=10)
+                code, _ = req(self.base, "PUT", f"/api/users/{uid}",
+                              {"role": "operator"}, boss_tok)
+                results[key] = code
+
+            t1 = threading.Thread(target=demote, args=("boss", boss["id"]))
+            t2 = threading.Thread(target=demote, args=("other", other_id))
+            t1.start()
+            t2.start()
+            t1.join(timeout=30)
+            t2.join(timeout=30)
+            self.assertIn((results["boss"], results["other"]),
+                          [(400, 200), (200, 400), (200, 401)],
+                          f"round {rnd}: {results}")
+            # exactly one of the pair is still a VCO: log in as the
+            # survivor (boss token is revoked if boss was demoted)
+            if results["boss"] == 200:
+                _, lv = req(self.base, "POST", "/api/login",
+                            {"username": f"vco{rnd}",
+                             "password": "vco-pass-1"})
+                surv_tok = lv["token"]
+                expect = {"boss": "operator", f"vco{rnd}": "vco"}
+            else:
+                surv_tok = boss_tok
+                expect = {"boss": "vco", f"vco{rnd}": "operator"}
+            _, users = req(self.base, "GET", "/api/users", token=surv_tok)
+            roles = {u["username"]: u["role"] for u in users["users"]}
+            self.assertEqual(roles["boss"], expect["boss"])
+            self.assertEqual(roles[f"vco{rnd}"], expect[f"vco{rnd}"])
+            # reset for the next round: back to boss-only, so the
+            # next round's fresh other is again the second VCO
+            if results["boss"] == 200:
+                # survivor is vco{rnd}: promote boss, demote survivor
+                req(self.base, "PUT", f"/api/users/{boss['id']}",
+                    {"role": "vco"}, surv_tok)
+                _, login = req(self.base, "POST", "/api/login",
+                               {"username": "boss",
+                                "password": "vco-pass-1"})
+                req(self.base, "PUT", f"/api/users/{other_id}",
+                    {"role": "operator"}, login["token"])
+            _, login = req(self.base, "POST", "/api/login",
+                           {"username": "boss", "password": "vco-pass-1"})
+            self.vco = login["token"]
+
+    def test_discrepancy_photo_delete(self):
+        _, iid, did = self.mk_insp()
+        url = f"/api/inspections/{iid}/discrepancies/{did}/photos"
+        _, r1 = req(self.base, "POST", url,
+                    {"image": photo_url("image/jpeg", b"P1")},
+                    self.operator)
+        _, r2 = req(self.base, "POST", url,
+                    {"image": photo_url("image/jpeg", b"P2")},
+                    self.operator)
+        pid1, pid2 = r1["photo_id"], r2["photo_id"]
+        # unauthenticated -> 401
+        code, _ = req(self.base, "DELETE",
+                      f"{url}/{pid1}")
+        self.assertEqual(code, 401)
+        # unknown photo -> 404
+        code, _ = req(self.base, "DELETE", f"{url}/99999",
+                      token=self.operator)
+        self.assertEqual(code, 404)
+        # delete one: detail shows one left, GET on it 404s
+        code, _ = req(self.base, "DELETE", f"{url}/{pid1}",
+                      token=self.operator)
+        self.assertEqual(code, 200)
+        _, full = req(self.base, "GET", f"/api/inspections/{iid}",
+                      token=self.operator)
+        self.assertEqual([p["id"] for p in
+                          full["discrepancies"][0]["photos"]], [pid2])
+        status, _, _ = req_bytes(self.base, "GET", f"{url}/{pid1}",
+                                 self.operator)
+        self.assertEqual(status, 404)
+        # deleting again -> 404
+        code, _ = req(self.base, "DELETE", f"{url}/{pid1}",
+                      token=self.operator)
+        self.assertEqual(code, 404)
+        # the freed slot is usable again (cap is per live photo)
+        for _ in range(3):
+            code, _ = req(self.base, "POST", url,
+                          {"image": photo_url("image/jpeg", b"PX")},
+                          self.operator)
+            self.assertEqual(code, 201)
+        code, _ = req(self.base, "POST", url,
+                      {"image": photo_url("image/jpeg", b"OVER")},
+                      self.operator)
+        self.assertEqual(code, 409)  # back at the 4-photo cap
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
+        self.assertTrue(any(a["action"] == "inspection-photo" and
+                            "removed" in a["detail"]
+                            for a in log["audit"]))
+
+    def test_photo_on_reviewed_inspection_409(self):
+        _, iid, did = self.mk_insp()
+        url = f"/api/inspections/{iid}/discrepancies/{did}/photos"
+        code, _ = req(self.base, "POST", url,
+                      {"image": photo_url("image/jpeg", b"BEFORE")},
+                      self.operator)
+        self.assertEqual(code, 201)
+        code, _ = req(self.base, "POST", f"/api/inspections/{iid}/review",
+                      {}, self.vco)
+        self.assertEqual(code, 200)
+        code, r = req(self.base, "POST", url,
+                      {"image": photo_url("image/jpeg", b"AFTER")},
+                      self.operator)
+        self.assertEqual(code, 409, r)
+        # the pre-review photo is still there; nothing new was added
+        _, full = req(self.base, "GET", f"/api/inspections/{iid}",
+                      token=self.operator)
+        self.assertEqual(len(full["discrepancies"][0]["photos"]), 1)
+
+    def test_detail_read_purges_expired(self):
+        _, iid, did = self.mk_insp()
+        self.backdate(iid, 31)
+        # no list read in between: the detail GET itself must purge
+        code, _ = req(self.base, "GET", f"/api/inspections/{iid}",
+                      token=self.operator)
+        self.assertEqual(code, 404)
+        _, lst = req(self.base, "GET", "/api/inspections", token=self.vco)
+        self.assertNotIn(iid, [i["id"] for i in lst["inspections"]])
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
+        self.assertTrue(any(a["action"] == "retention" and
+                            "1 inspection(s) removed" in a["detail"]
+                            for a in log["audit"]))
+
+    def test_reviewed_old_inspection_purged_with_photos(self):
+        _, iid, did = self.mk_insp()
+        url = f"/api/inspections/{iid}/discrepancies/{did}/photos"
+        req(self.base, "POST", url,
+            {"image": photo_url("image/jpeg", b"OLD")}, self.operator)
+        req(self.base, "POST", f"/api/inspections/{iid}/review",
+            {}, self.vco)
+        self.backdate(iid, 31)
+        _, lst = req(self.base, "GET", "/api/inspections", token=self.vco)
+        self.assertNotIn(iid, [i["id"] for i in lst["inspections"]])
+        conn = sky.connect(sky.Handler.db_path)
+        n = conn.execute("SELECT COUNT(*) c FROM discrepancy_photos"
+                         " WHERE discrepancy_id=?", (did,)).fetchone()["c"]
+        self.assertEqual(n, 0)
+        conn.close()
+        # submission AND review audit rows remain
+        _, log = req(self.base, "GET", "/api/audit", token=self.vco)
+        acts = [a["action"] for a in log["audit"]]
+        self.assertIn("inspection", acts)
+        self.assertIn("inspection-review", acts)
+
+    def test_retention_exact_boundary_and_startup_path(self):
+        # EXACT boundary: cutoff is strict (created_at < now-30d), so
+        # an inspection exactly 30 days old survives until older.
+        # Wall-clock comparison is racy, so freeze the server module's
+        # clock: the live server thread shares this process's module
+        # object, so patching sky.datetime freezes it too.
+        import datetime as _dt
+        real_datetime = sky.datetime
+
+        class FixedDatetime(real_datetime):
+            _now = None
+
+            @classmethod
+            def now(cls, tz=None):
+                return cls._now
+
+        _, iid, _ = self.mk_insp()
+        fixed = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0)
+        exact = (fixed - _dt.timedelta(days=30)).isoformat(
+            timespec="seconds")
+        conn = sky.connect(sky.Handler.db_path)
+        conn.execute("UPDATE inspections SET created_at=? WHERE id=?",
+                     (exact, iid))
+        conn.commit()
+        conn.close()
+        FixedDatetime._now = fixed
+        sky.datetime = FixedDatetime
+        try:
+            _, lst = req(self.base, "GET", "/api/inspections",
+                         token=self.vco)
+            self.assertIn(iid, [i["id"] for i in lst["inspections"]],
+                          "exactly-30-days-old must survive")
+            FixedDatetime._now = fixed + _dt.timedelta(seconds=5)
+            _, lst = req(self.base, "GET", "/api/inspections",
+                         token=self.vco)
+            self.assertNotIn(iid, [i["id"] for i in lst["inspections"]],
+                             "older than 30 days must purge")
+        finally:
+            sky.datetime = real_datetime
+        # STARTUP path: main() calls purge_expired_inspections(conn)
+        # directly at boot — exercise that exact call, not the HTTP
+        # list-read trigger
+        _, iid2, _ = self.mk_insp(bumper="FX-2")
+        self.backdate(iid2, 31)
+        conn = sky.connect(sky.Handler.db_path)
+        n = sky.purge_expired_inspections(conn)
+        conn.close()
+        self.assertEqual(n, 1)
+        code, _ = req(self.base, "GET", f"/api/inspections/{iid2}",
+                      token=self.operator)
+        self.assertEqual(code, 404)
