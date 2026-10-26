@@ -79,7 +79,7 @@
       <h2>1800 inspections</h2>
       <p class="hint">AF Form 1800 — Operator's Inspection Guide and Trouble Report.
       Unreviewed inspections list first. Inspections are online-only; the VCO
-      review queue is the notification to the org admin (there is no email
+      review queue is the notification to the org VCO (there is no email
       in Skyline).</p>
       <div class="toolbar">
         <select id="insp-filter-unit" aria-label="Filter inspections by unit">
@@ -132,8 +132,8 @@
           <button data-f="PMC">PMC</button>
           <button data-f="NMC">NMC</button>
         </div>
-        <button id="btn-add-vehicle" class="btn primary editor-only">+ Add vehicle</button>
-        <button id="btn-import" class="btn editor-only">Import from Excel</button>
+        <button id="btn-add-vehicle" class="btn primary vco-only">+ Add vehicle</button>
+        <button id="btn-import" class="btn vco-only">Import from Excel</button>
         <input id="import-file" type="file" accept=".xlsx,.csv" class="hidden" aria-label="Spreadsheet file to import (.xlsx or .csv)">
       </div>
       <div id="import-preview" class="card hidden"></div>
@@ -160,7 +160,7 @@
       <div class="card">
         <h3>Authorizations <span class="hint">(this unit — authorized vs on hand, per vehicle type)</span></h3>
         <div id="unit-auth-list"></div>
-        <form id="unit-auth-add" class="editor-only" style="margin-top:12px">
+        <form id="unit-auth-add" class="vco-only" style="margin-top:12px">
           <div class="grid2">
             <input id="uaa-type" placeholder="New type (e.g. JLTV)" aria-label="New authorization vehicle type" list="type-list" required>
             <input id="uaa-count" type="number" min="0" placeholder="Authorized count" aria-label="New authorization count" required>
@@ -173,7 +173,7 @@
       <div class="card">
         <h3>UTCs <span class="hint">(Unit Type Codes — deployment packages for this unit)</span></h3>
         <div id="utc-list"></div>
-        <button id="btn-new-utc" class="btn primary editor-only">+ New UTC</button>
+        <button id="btn-new-utc" class="btn primary vco-only">+ New UTC</button>
         <form id="utc-form" class="hidden" style="margin-top:12px">
           <div class="grid2">
             <input id="utc-code" placeholder="Code (e.g. XFFC1)" aria-label="UTC code" maxlength="20" required>
@@ -193,7 +193,7 @@
       <div id="utc-viz-wrap" class="vizwrap"></div>
       <h3 style="margin-top:18px">Vehicles in this UTC</h3>
       <div id="utc-members"></div>
-      <div id="utc-editor-tools">
+      <div id="utc-vco-tools">
         <div class="card">
           <h3>Add vehicles <span class="hint">(this unit's vehicles not yet in the UTC)</span></h3>
           <div id="utc-add-list"></div>
@@ -233,7 +233,7 @@
       <button class="backbtn" data-back>← All units</button>
       <h2>Sync conflicts</h2>
       <p class="hint">A conflicting offline status change never overwrites the current
-      status silently. An Editor decides which status stands.</p>
+      status silently. A VCO decides which status stands.</p>
       <div id="conflict-list"></div>
     </section>
 
@@ -251,8 +251,7 @@
             <input id="uf-password" type="password" placeholder="Password (min 8)" aria-label="New account password" required>
             <select id="uf-unit" aria-label="New account unit"></select>
             <select id="uf-role" aria-label="New account role">
-              <option value="operator">Operator — read all + 1800 inspections</option>
-              <option value="editor">Editor — update any unit</option>
+              <option value="operator">Operator — read all + 1800 inspections + photos</option>
               <option value="vco">VCO — everything + inspection review</option>
             </select>
           </div>
