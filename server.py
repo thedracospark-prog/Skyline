@@ -39,8 +39,51 @@ UNITS = [
 ]
 UNIT_NAMES = [n for n, _ in UNITS]
 SQUADRONS = [n for n, k in UNITS if k == "squadron"]
-ROLES = ("viewer", "editor", "admin")
+ROLES = ("operator", "editor", "vco")
 STATUSES = ("FMC", "PMC", "NMC")
+# DAF Form 1800 (Operator's Inspection Guide and Trouble Report) — the
+# official 35 checklist items, verbatim. Numbered items always store
+# THIS text; a client-supplied text for a numbered item is ignored.
+INSPECTION_ITEMS = (
+    "Cleanliness/damage/missing items (interior/exterior); unusual noise or occurrence (during operation)",
+    "Leaks/fluid levels (oil/coolant/hydraulic/transmission/brake fluid)",
+    "Safety devices (wiring/lights/horn/warning devices/sirens/reflectors/mirrors/seatbelts)",
+    "Batteries (fluid/damage/cleanliness/security); instruments/gauges (operation & readings)",
+    "Drive belts (fraying/cracking/tension); pulley/motor (air/hydraulic/electrical)",
+    "Steering/springs/shackles (free play/excessive wear)",
+    "Exhaust system/spark arrestors (damage/leaks)",
+    "Tires/wheels (lug nuts/cracks); tracks",
+    "Heater/defroster/air-conditioner; auxiliary generators/auxiliary heaters",
+    "Brakes (servicing/parking); clutches (operation); accelerator pedal (damage/worn)",
+    "Windshield (wipers/washer fluid/cracks)",
+    "Hydraulic hoses (damage/frayed); cylinders/valves (damage/leaks)",
+    "Cold weather aids (ether/alcohol injector, battery heater, oil/engine heater, coolant heater, etc.)",
+    "Power take-off (PTO)",
+    "Winch/tow connections",
+    "Air tanks (drain daily or after operation)",
+    "Mast tines/rollerized tines",
+    "Rollers/power conveyors/rails/ladders/catwalks/cargo bed",
+    "Bed (K-load): top/half/lowest/roll/shift/yaw (check position)",
+    "Lower lobe cab shift (operation)",
+    "Emergency stand-by system",
+    'Markings — check legibility ("WATCHSTEP" stencil, etc.)',
+    "Chutes/augers/fan blades/wear shoes",
+    "Drums/crowns/fair leads",
+    "Booms/outriggers/basket/platform/turntable (check for cracks & damage)",
+    "Brooms/sprockets/chains",
+    "Blades/reels/sickle bars/flails",
+    "Kettle/hoisting mechanism/agitators",
+    "Sheaves/blocks/cables",
+    "Mould boards/bowls/cutting edges/skids",
+    "Pumps/piping/discharge valves (leaks, corrosion); spare bars",
+    "Firefighting specialized equipment/safety devices",
+    "Firefighting system operation & foam/water levels",
+    "Auxiliary firefighting system",
+    "Hose/reels/handlines/turrets",
+)
+INSPECTION_STATUSES = ("submitted", "reviewed")
+DISCREPANCY_STATUSES = ("open", "corrected", "delayed", "disposition")
+MAX_OTHER_ITEMS = 10
 VEHICLE_FIELDS = ("unit", "bumper", "type", "status", "mileage",
                   "maint_due_date", "maint_due_miles", "location", "notes")
 MAX_BODY = 1_048_576  # 1 MB request-body cap
@@ -165,6 +208,93 @@ def validate_vehicle(data, partial=False):
             clean[f] = "" if v is None else str(v)
     return clean
 
+def validate_inspection_items(items):
+    """Validate an inspection's item list. Returns cleaned rows:
+    [{item_no (int|None), item_text, applies (bool), result (str|None),
+      comment}]. Numbered items 1-35 always carry the official fixed
+    text (a client-supplied text for one is ignored, never stored);
+    custom 'other' items carry client text (<=120 chars, max 10).
+    result is required when applies, and must be pass/fail."""
+    if not isinstance(items, list) or not items:
+        raise ValidationError("items must be a non-empty list")
+    if len(items) > len(INSPECTION_ITEMS) + MAX_OTHER_ITEMS:
+        raise ValidationError("too many items (35 numbered + 10 other max)")
+    seen, others, clean = set(), 0, []
+    for entry in items:
+        if not isinstance(entry, dict):
+            raise ValidationError("each item must be an object")
+        item_no = entry.get("item_no")
+        if isinstance(item_no, bool):
+            raise ValidationError('item_no must be 1-35 or "other"')
+        if isinstance(item_no, int):
+            if not 1 <= item_no <= len(INSPECTION_ITEMS):
+                raise ValidationError('item_no must be 1-35 or "other"')
+            if item_no in seen:
+                raise ValidationError(f"duplicate item {item_no}")
+            seen.add(item_no)
+            text = INSPECTION_ITEMS[item_no - 1]
+        elif item_no == "other":
+            others += 1
+            if others > MAX_OTHER_ITEMS:
+                raise ValidationError("at most 10 other items")
+            text = entry.get("text")
+            if not isinstance(text, str) or not text.strip():
+                raise ValidationError("other items need text")
+            text = text.strip()
+            if len(text) > 120:
+                raise ValidationError("other item text must be <= 120 chars")
+            item_no = None
+        else:
+            raise ValidationError('item_no must be 1-35 or "other"')
+        applies = entry.get("applies", True)
+        if not isinstance(applies, bool):
+            raise ValidationError("applies must be true or false")
+        result = None
+        if applies:
+            result = entry.get("result")
+            if result not in ("pass", "fail"):
+                raise ValidationError(
+                    "result must be pass or fail when the item applies")
+        comment = entry.get("comment", "")
+        if comment is None:
+            comment = ""
+        if not isinstance(comment, str):
+            raise ValidationError("comment must be text")
+        if len(comment) > 2000:
+            raise ValidationError("comment must be <= 2000 chars")
+        clean.append({"item_no": item_no, "item_text": text,
+                      "applies": applies, "result": result,
+                      "comment": comment.strip()})
+    return clean
+
+PHOTO_BODY_CAP = 3 * 1024 * 1024  # photo POST request cap: 3 MB
+PHOTO_MIMES = ("image/jpeg", "image/png", "image/webp", "image/gif")
+
+def parse_photo_data_url(data):
+    """Validate a photo upload body: {image: "data:<mime>;base64,..."}.
+    Returns (raw_bytes, mime). Anything else is a 400. The client
+    downscales to max 1600 px JPEG 0.8 first, so typical uploads are
+    200-500 KB; the 3 MB cap is the backstop, not the target."""
+    if not isinstance(data, dict):
+        raise ValidationError("photo body must be an object")
+    url = data.get("image")
+    if not isinstance(url, str) or not url.startswith("data:image/"):
+        raise ValidationError("image must be a data URL (data:image/...)")
+    try:
+        header, b64 = url.split(",", 1)
+    except ValueError:
+        raise ValidationError("image data URL is malformed")
+    mime = header[5:].split(";", 1)[0]
+    if mime not in PHOTO_MIMES or ";base64" not in header:
+        raise ValidationError("image must be a base64 JPEG, PNG, WebP or GIF")
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValidationError("image data is not valid base64")
+    if not raw:
+        raise ValidationError("image is empty")
+    return raw, mime
+
 def bumper_taken(conn, unit, bumper, exclude_id=None):
     q = "SELECT id FROM vehicles WHERE unit=? AND bumper=?"
     args = [unit, bumper]
@@ -200,7 +330,7 @@ def init_db(conn):
     CREATE TABLE IF NOT EXISTS users(
         id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL,
         display_name TEXT NOT NULL, password_hash TEXT NOT NULL,
-        unit TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'viewer',
+        unit TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'operator',
         created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions(
         token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
@@ -236,10 +366,37 @@ def init_db(conn):
         utc_id INTEGER NOT NULL REFERENCES utcs(id),
         vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
         PRIMARY KEY(utc_id, vehicle_id));
+    CREATE TABLE IF NOT EXISTS inspections(
+        id INTEGER PRIMARY KEY, vehicle_id INTEGER NOT NULL,
+        unit TEXT NOT NULL, bumper TEXT NOT NULL, operator TEXT NOT NULL,
+        month_year TEXT NOT NULL, mileage_hours INTEGER,
+        tire_front TEXT DEFAULT '', tire_rear TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'submitted',
+        created_at TEXT NOT NULL, reviewed_by TEXT DEFAULT '',
+        reviewed_at TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS inspection_items(
+        id INTEGER PRIMARY KEY, inspection_id INTEGER NOT NULL,
+        item_no INTEGER, item_text TEXT NOT NULL, applies INTEGER NOT NULL,
+        result TEXT DEFAULT '', comment TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS discrepancies(
+        id INTEGER PRIMARY KEY, inspection_id INTEGER NOT NULL,
+        item_no INTEGER, description TEXT NOT NULL,
+        date_found TEXT NOT NULL, miles_hours INTEGER,
+        status TEXT NOT NULL DEFAULT 'open');
+    CREATE TABLE IF NOT EXISTS discrepancy_photos(
+        id INTEGER PRIMARY KEY, discrepancy_id INTEGER NOT NULL,
+        image BLOB NOT NULL, mime TEXT NOT NULL,
+        created_at TEXT NOT NULL);
     """)
+    # v1.2 role rename: legacy stored roles migrate in place on boot.
+    # Nothing else is touched — historical audit rows keep their old text.
+    conn.execute("UPDATE users SET role='operator' WHERE role='viewer'")
+    conn.execute("UPDATE users SET role='vco' WHERE role='admin'")
     # migrations for databases created by earlier builds
     _ensure_column(conn, "sessions", "expires_at", "TEXT DEFAULT ''")
     _ensure_column(conn, "vehicles", "client_op", "TEXT DEFAULT ''")
+    _ensure_column(conn, "vehicles", "photo", "BLOB")
+    _ensure_column(conn, "vehicles", "photo_mime", "TEXT DEFAULT ''")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicles_client_op"
                  " ON vehicles(client_op) WHERE client_op <> ''")
     _ensure_bumper_unique_index(conn)
@@ -312,6 +469,38 @@ def close_open_conflicts(conn, vehicle_id, actor, why):
               detail=f"{cur.rowcount} open conflict(s) closed: {why}")
     return cur.rowcount
 
+RETENTION_DAYS = 30
+
+def purge_expired_inspections(conn, actor="retention"):
+    """1800 retention: an inspection record (inspection + items +
+    discrepancies + discrepancy photos) lives 30 days from submission,
+    then is purged. ONE audit row per run when anything was removed;
+    the original submission/review audit rows REMAIN (accountability
+    trail, no photos). Vehicle photos are fleet data and NEVER expire
+    here. Returns the number purged."""
+    cutoff = (datetime.now(timezone.utc) -
+              timedelta(days=RETENTION_DAYS)).isoformat(timespec="seconds")
+    with immediate_tx(conn):
+        rows = conn.execute(
+            "SELECT id FROM inspections WHERE created_at < ?",
+            (cutoff,)).fetchall()
+        if not rows:
+            return 0
+        ids = [r["id"] for r in rows]
+        q = ",".join("?" * len(ids))
+        conn.execute(
+            "DELETE FROM discrepancy_photos WHERE discrepancy_id IN "
+            f"(SELECT id FROM discrepancies WHERE inspection_id IN ({q}))",
+            ids)
+        conn.execute(
+            f"DELETE FROM discrepancies WHERE inspection_id IN ({q})", ids)
+        conn.execute(
+            f"DELETE FROM inspection_items WHERE inspection_id IN ({q})", ids)
+        conn.execute(f"DELETE FROM inspections WHERE id IN ({q})", ids)
+        audit(conn, None, actor, "retention",
+              detail=f"retention purge: {len(rows)} inspection(s) removed")
+        return len(rows)
+
 # ------------------------------------------------------------- derivations
 def mc_rate_half_up(fmc, on_hand):
     """MC rate (percent, 1 decimal) rounded HALF-UP — the rule the
@@ -345,8 +534,14 @@ def unit_stats(conn, unit_name):
             "mc_rate": mc_rate, "includes_demo": bool(demo)}
 
 def fleet_snapshot(conn):
-    vehicles = [dict(r) for r in
-                conn.execute("SELECT * FROM vehicles ORDER BY unit, bumper")]
+    # Photo bytes NEVER ride the snapshot: only a presence flag, so
+    # fleet payloads and offline snapshots stay light. The bytes come
+    # back on demand from GET /api/vehicles/{id}/photo.
+    vehicles = [dict(r) for r in conn.execute(
+        "SELECT id, unit, bumper, type, status, mileage, maint_due_date,"
+        " maint_due_miles, location, notes, is_demo, client_op,"
+        " updated_by, updated_at, (photo IS NOT NULL) AS photo"
+        " FROM vehicles ORDER BY unit, bumper")]
     auths = [dict(r) for r in conn.execute(
         "SELECT * FROM authorizations ORDER BY unit, vehicle_type")]
     units = []
@@ -819,6 +1014,18 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _send_bytes(self, code, raw, mime):
+        """Raw image response for the photo GET endpoints."""
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _json_body(self, max_bytes=MAX_BODY):
         """Parse the request body with a hard size cap checked BEFORE
         parsing. Raises BodyError -> JSON 4xx (never a dead request).
@@ -899,6 +1106,35 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return value
 
+    @staticmethod
+    def _route_id(path, *shape):
+        """Anchored route match: shape segments, with "?" marking an
+        integer id slot (int64-guarded like _path_id). Returns the list
+        of parsed ids, or None when the path does not match EXACTLY.
+        Prefix-only matching used to let trailing segments fall through
+        to the wrong handler — e.g. DELETE /api/vehicles/{id}/photo/
+        extra missed the photo branch and hit generic vehicle-delete,
+        DELETING THE VEHICLE (v1.2 fix pass, reviewer B1). Single-id
+        routes use this; legitimate suffixed routes (vehicle /photo,
+        inspection /discrepancies/{did}/photos/{pid}, utc /vehicles
+        membership, conflicts /resolve) have their own shapes."""
+        parts = path.strip("/").split("/")
+        if len(parts) != len(shape):
+            return None
+        ids = []
+        for part, want in zip(parts, shape):
+            if want == "?":
+                try:
+                    value = int(part)
+                except ValueError:
+                    return None
+                if not (-(2 ** 63) <= value <= 2 ** 63 - 1):
+                    return None
+                ids.append(value)
+            elif part != want:
+                return None
+        return ids
+
     def _conn(self):
         return connect(self.db_path)
 
@@ -933,10 +1169,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- routing (every route ends in a JSON response, even on bugs)
     def do_GET(self):
-        path = urlparse(self.path).path
-        if path.startswith("/api/"):
-            return self.api_get(path)
-        return self.static_get(path)
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/"):
+            return self.api_get(parsed.path, parse_qs(parsed.query))
+        return self.static_get(parsed.path)
 
     def do_POST(self):
         path = urlparse(self.path).path
@@ -978,7 +1214,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, data, ctype)
 
     # ---- API: reads
-    def api_get(self, path):
+    def api_get(self, path, query=None):
         conn = self._conn()
         try:
             if path == "/api/setup/status":
@@ -1029,13 +1265,56 @@ class Handler(BaseHTTPRequestHandler):
                 rows = [dict(r) for r in conn.execute(
                     "SELECT * FROM conflicts WHERE resolved=0 ORDER BY id DESC")]
                 return self._send(200, {"conflicts": rows})
+            ids = self._route_id(path, "api", "vehicles", "?", "photo")
+            if ids is not None:
+                vid = ids[0]
+                row = conn.execute(
+                    "SELECT photo, photo_mime FROM vehicles WHERE id=?",
+                    (vid,)).fetchone()
+                if not row or row["photo"] is None:
+                    return self._send(404, {"error": "vehicle photo not found"})
+                return self._send_bytes(200, row["photo"],
+                                        row["photo_mime"] or "image/jpeg")
+            # GET /api/inspections/{iid}/discrepancies/{did}/photos/{pid}
+            # (anchored: a missing pid no longer falls through to the
+            # inspection-detail handler — v1.2 fix pass, routing nit)
+            ids = self._route_id(path, "api", "inspections", "?",
+                                 "discrepancies", "?", "photos", "?")
+            if ids is not None:
+                iid, did, pid = ids
+                prow = conn.execute(
+                    "SELECT image, mime FROM discrepancy_photos"
+                    " WHERE id=? AND discrepancy_id=?",
+                    (pid, did)).fetchone()
+                if not prow:
+                    return self._send(404, {"error": "photo not found"})
+                disc = conn.execute(
+                    "SELECT inspection_id FROM discrepancies WHERE id=?",
+                    (did,)).fetchone()
+                if not disc or disc["inspection_id"] != iid:
+                    return self._send(404, {"error": "photo not found"})
+                return self._send_bytes(200, prow["image"], prow["mime"])
+            if path == "/api/inspections":
+                return self._list_inspections(conn, query or {})
+            ids = self._route_id(path, "api", "inspections", "?")
+            if ids is not None:
+                # retention runs on detail reads too (v1.2 fix pass):
+                # a 31-day-old inspection must 404 here, not just on
+                # the next list read
+                purge_expired_inspections(conn)
+                full = self._inspection_full(conn, ids[0])
+                if not full:
+                    return self._send(404, {"error": "inspection not found"})
+                return self._send(200, full)
             if path == "/api/users":
-                if user["role"] != "admin":
-                    return self._send(403, {"error": "admin only"})
+                if user["role"] != "vco":
+                    return self._send(403, {"error": "VCO only"})
                 rows = [public_user(dict(r)) for r in
                         conn.execute("SELECT * FROM users ORDER BY username")]
                 return self._send(200, {"users": rows})
             self._send(404, {"error": "not found"})
+        except ValidationError as e:
+            self._send(e.status, {"error": e.message})
         except Exception:
             traceback.print_exc()
             self._send(500, {"error": "internal error"})
@@ -1046,8 +1325,12 @@ class Handler(BaseHTTPRequestHandler):
     def api_post(self, path):
         conn = self._conn()
         try:
-            cap = IMPORT_JSON_CAP if path.startswith("/api/import/") \
-                else MAX_BODY
+            if path.startswith("/api/import/"):
+                cap = IMPORT_JSON_CAP
+            elif "/photo" in path:
+                cap = PHOTO_BODY_CAP
+            else:
+                cap = MAX_BODY
             data = self._json_body(cap)
             if path == "/api/setup":
                 return self._setup(conn, data)
@@ -1074,49 +1357,67 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 return
             if path == "/api/users":
-                if user["role"] != "admin":
-                    return self._send(403, {"error": "admin only"})
+                if user["role"] != "vco":
+                    return self._send(403, {"error": "VCO only"})
                 return self._create_user(conn, data,
-                                         role=data.get("role", "viewer"),
+                                         role=data.get("role", "operator"),
                                          actor=user["display_name"])
+            if path == "/api/inspections":
+                # any signed-in role may submit (operators included)
+                return self._create_inspection(conn, data, user)
+            if self._route_id(path, "api", "inspections", "?",
+                              "review") is not None:
+                if user["role"] != "vco":
+                    return self._send(403, {"error": "VCO only"})
+                return self._review_inspection(conn, path, data, user)
+            if self._route_id(path, "api", "vehicles", "?",
+                              "photo") is not None:
+                # any signed-in role may attach a vehicle photo
+                return self._attach_vehicle_photo(conn, path, data, user)
+            if self._route_id(path, "api", "inspections", "?",
+                              "discrepancies", "?", "photos") is not None:
+                # any signed-in role may attach a discrepancy photo
+                return self._attach_discrepancy_photo(conn, path, data, user)
             if path == "/api/vehicles":
-                if not self._require_role(user, ("editor", "admin")):
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._insert_vehicle(conn, data, user)
             if path == "/api/authorizations":
-                if not self._require_role(user, ("editor", "admin")):
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._upsert_authorization(conn, data, user)
             if path == "/api/utcs":
-                if not self._require_role(user, ("editor", "admin")):
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._create_utc(conn, data, user)
-            if path.startswith("/api/utcs/") and path.endswith("/vehicles"):
-                if not self._require_role(user, ("editor", "admin")):
+            if self._route_id(path, "api", "utcs", "?",
+                              "vehicles") is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._utc_add_vehicle(conn, path, data, user)
             if path == "/api/import/preview":
-                if not self._require_role(user, ("editor", "admin")):
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._import_preview(conn, data, user)
             if path == "/api/import/confirm":
-                if not self._require_role(user, ("editor", "admin")):
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._import_confirm(conn, data, user)
             if path == "/api/demo/load":
-                if user["role"] != "admin":
-                    return self._send(403, {"error": "admin only"})
+                if user["role"] != "vco":
+                    return self._send(403, {"error": "VCO only"})
                 with immediate_tx(conn):
                     load_demo(conn, user["display_name"])
                 return self._send(200, {"ok": True})
             if path == "/api/demo/remove":
-                if user["role"] != "admin":
-                    return self._send(403, {"error": "admin only"})
+                if user["role"] != "vco":
+                    return self._send(403, {"error": "VCO only"})
                 with immediate_tx(conn):
                     n = remove_demo(conn, user["display_name"])
                 return self._send(200, {"ok": True, "removed": n})
-            if path.startswith("/api/conflicts/") and path.endswith("/resolve"):
-                if not self._require_role(user, ("editor", "admin")):
+            if self._route_id(path, "api", "conflicts", "?",
+                              "resolve") is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._resolve_conflict(conn, path, data, user)
             self._send(404, {"error": "not found"})
@@ -1132,7 +1433,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _setup(self, conn, data):
         """First-run setup — atomic: BEGIN IMMEDIATE serializes concurrent
-        setup calls so exactly ONE admin can ever be created here."""
+        setup calls so exactly ONE VCO can ever be created here."""
         username = (data.get("username") or "").strip()
         password = data.get("password") or ""
         display = (data.get("display_name") or username).strip()
@@ -1149,18 +1450,18 @@ class Handler(BaseHTTPRequestHandler):
             cur = conn.execute(
                 "INSERT INTO users(username, display_name, password_hash, unit,"
                 " role, created_at) VALUES (?,?,?,?,?,?)",
-                (username, display, hash_password(password), unit, "admin",
+                (username, display, hash_password(password), unit, "vco",
                  now_iso()))
             uid = cur.lastrowid
             audit(conn, None, "setup", "account",
-                  detail=f"created {username} (admin)")
+                  detail=f"created {username} (vco)")
             token = secrets.token_urlsafe(32)
             conn.execute("INSERT INTO sessions(token, user_id, created_at,"
                          " expires_at) VALUES (?,?,?,?)",
                          (token, uid, now_iso(), session_expiry_iso()))
             row = conn.execute("SELECT * FROM users WHERE id=?",
                                (uid,)).fetchone()
-        # setup signs the new Admin in directly (session returned)
+        # setup signs the new VCO in directly (session returned)
         return self._send(201, {"user": public_user(dict(row)), "token": token})
 
     def _resolve_conflict(self, conn, path, data, user):
@@ -1406,6 +1707,316 @@ class Handler(BaseHTTPRequestHandler):
                          f" from {utc['unit']} UTC {utc['code']}")
         return self._send(200, {"ok": True})
 
+    # ---- AF Form 1800 inspections (any signed-in role submits;
+    #      VCO reviews; the vehicle FMC/PMC/NMC status is never changed
+    #      by an inspection — that stays an editor/VCO action)
+    def _inspection_full(self, conn, iid):
+        """Inspection + its items + discrepancies, or None."""
+        row = conn.execute("SELECT * FROM inspections WHERE id=?",
+                           (iid,)).fetchone()
+        if not row:
+            return None
+        items = [dict(r) for r in conn.execute(
+            "SELECT item_no, item_text, applies, result, comment"
+            " FROM inspection_items WHERE inspection_id=? ORDER BY id",
+            (iid,))]
+        for it in items:
+            it["applies"] = bool(it["applies"])
+        discs = [dict(r) for r in conn.execute(
+            "SELECT * FROM discrepancies WHERE inspection_id=? ORDER BY id",
+            (iid,))]
+        # detail JSON carries photo counts/URLs per discrepancy, NOT bytes
+        for d in discs:
+            d["photos"] = [{
+                "id": p["id"],
+                "url": f"/api/inspections/{iid}/discrepancies/{d['id']}"
+                       f"/photos/{p['id']}"}
+                for p in conn.execute(
+                    "SELECT id FROM discrepancy_photos"
+                    " WHERE discrepancy_id=? ORDER BY id", (d["id"],))]
+        return {"inspection": dict(row), "items": items,
+                "discrepancies": discs}
+
+    def _create_inspection(self, conn, data, user):
+        vehicle_id = data.get("vehicle_id")
+        if isinstance(vehicle_id, bool) or \
+                not isinstance(vehicle_id, (int, str)) or \
+                (isinstance(vehicle_id, str)
+                 and not vehicle_id.strip().isdigit()):
+            raise ValidationError("vehicle_id must be an integer")
+        vehicle_id = int(vehicle_id)
+        # int64 guard (v1.2 fix pass): an absurd id must 404, never
+        # 500 on the SQLite bind
+        if not (-(2 ** 63) <= vehicle_id <= 2 ** 63 - 1):
+            return self._send(404, {"error": "vehicle not found"})
+        month_year = data.get("month_year")
+        if not isinstance(month_year, str) or not month_year.strip():
+            raise ValidationError("month_year is required")
+        month_year = month_year.strip()
+        if len(month_year) > 40:
+            raise ValidationError("month_year must be <= 40 chars")
+        mileage = strict_nonneg_int(data.get("mileage_hours"),
+                                    "mileage_hours")
+        tires = {}
+        for f in ("tire_front", "tire_rear"):
+            v = data.get(f)
+            if v is None:
+                tires[f] = ""
+            elif not isinstance(v, str):
+                raise ValidationError(f"{f} must be text")
+            elif len(v.strip()) > 40:
+                raise ValidationError(f"{f} must be <= 40 chars")
+            else:
+                tires[f] = v.strip()
+        items = validate_inspection_items(data.get("items"))
+        with immediate_tx(conn):
+            veh = conn.execute("SELECT * FROM vehicles WHERE id=?",
+                               (vehicle_id,)).fetchone()
+            if not veh:
+                return self._send(404, {"error": "vehicle not found"})
+            veh = dict(veh)
+            cur = conn.execute(
+                "INSERT INTO inspections(vehicle_id, unit, bumper, operator,"
+                " month_year, mileage_hours, tire_front, tire_rear, status,"
+                " created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (vehicle_id, veh["unit"], veh["bumper"],
+                 user["display_name"], month_year, mileage,
+                 tires["tire_front"], tires["tire_rear"], "submitted",
+                 now_iso()))
+            iid = cur.lastrowid
+            failed = 0
+            for it in items:
+                conn.execute(
+                    "INSERT INTO inspection_items(inspection_id, item_no,"
+                    " item_text, applies, result, comment)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (iid, it["item_no"], it["item_text"],
+                     1 if it["applies"] else 0, it["result"] or "",
+                     it["comment"]))
+                if it["applies"] and it["result"] == "fail":
+                    failed += 1
+                    conn.execute(
+                        "INSERT INTO discrepancies(inspection_id, item_no,"
+                        " description, date_found, miles_hours, status)"
+                        " VALUES (?,?,?,?,?,?)",
+                        (iid, it["item_no"],
+                         it["comment"] or "Failed — see comment",
+                         _date.today().isoformat(), mileage, "open"))
+            if mileage is not None:
+                old = veh["mileage"]
+                conn.execute("UPDATE vehicles SET mileage=?, updated_by=?,"
+                             " updated_at=? WHERE id=?",
+                             (mileage, user["display_name"], now_iso(),
+                              vehicle_id))
+                audit(conn, vehicle_id, user["display_name"], "update",
+                      field="mileage", old=old, new=mileage,
+                      detail="1800 inspection mileage/hours")
+            audit(conn, vehicle_id, user["display_name"], "inspection",
+                  detail=f"1800 inspection submitted ({month_year}) — "
+                         f"{len(items)} items, {failed} "
+                         f"{'discrepancy' if failed == 1 else 'discrepancies'}")
+        return self._send(201, self._inspection_full(conn, iid))
+
+    def _list_inspections(self, conn, query):
+        # retention runs before every inspection list read, so the VCO
+        # queue naturally shows only unpurged items
+        purge_expired_inspections(conn)
+        clauses, args = [], []
+        vid = (query.get("vehicle_id") or [None])[0]
+        if vid is not None:
+            if not vid.isdigit():
+                raise ValidationError("vehicle_id must be an integer")
+            if not (-(2 ** 63) <= int(vid) <= 2 ** 63 - 1):
+                # int64 guard (v1.2 fix pass): absurd filter id 400s,
+                # never 500s on the SQLite bind
+                raise ValidationError("vehicle_id is out of range")
+            clauses.append("vehicle_id=?")
+            args.append(int(vid))
+        unit = (query.get("unit") or [None])[0]
+        if unit is not None:
+            if unit not in UNIT_NAMES:
+                raise ValidationError("unit must be one of the five units")
+            clauses.append("unit=?")
+            args.append(unit)
+        rev = (query.get("reviewed") or [None])[0]
+        if rev is not None:
+            if rev == "true":
+                clauses.append("status='reviewed'")
+            elif rev == "false":
+                clauses.append("status='submitted'")
+            else:
+                raise ValidationError("reviewed must be true or false")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = [dict(r) for r in conn.execute(
+            "SELECT inspections.*, "
+            "(SELECT COUNT(*) FROM inspection_items WHERE "
+            " inspection_items.inspection_id = inspections.id) AS item_count,"
+            "(SELECT COUNT(*) FROM discrepancies WHERE "
+            " discrepancies.inspection_id = inspections.id) AS fail_count"
+            " FROM inspections" + where +
+            " ORDER BY CASE WHEN status='submitted' THEN 0 ELSE 1 END,"
+            " id DESC", args)]
+        return self._send(200, {"inspections": rows})
+
+    def _review_inspection(self, conn, path, data, user):
+        iid = self._path_id(path, "/api/inspections/")
+        if iid is None:
+            return self._send(404, {"error": "inspection not found"})
+        dispositions = data.get("dispositions", [])
+        if dispositions is None:
+            dispositions = []
+        if not isinstance(dispositions, list):
+            raise ValidationError("dispositions must be a list")
+        clean_disp = []
+        seen_disp = set()
+        for d in dispositions:
+            if not isinstance(d, dict):
+                raise ValidationError("each disposition must be an object")
+            did = d.get("discrepancy_id")
+            if isinstance(did, bool) or not isinstance(did, int):
+                raise ValidationError("discrepancy_id must be an integer")
+            if not (-(2 ** 63) <= did <= 2 ** 63 - 1):
+                raise ValidationError("discrepancy_id is out of range")
+            if did in seen_disp:
+                raise ValidationError(
+                    "duplicate discrepancy in dispositions")
+            seen_disp.add(did)
+            st = d.get("status")
+            if st not in ("corrected", "delayed", "disposition"):
+                raise ValidationError(
+                    "disposition status must be corrected, delayed or "
+                    "disposition")
+            clean_disp.append((did, st))
+        with immediate_tx(conn):
+            row = conn.execute("SELECT * FROM inspections WHERE id=?",
+                               (iid,)).fetchone()
+            if not row:
+                return self._send(404, {"error": "inspection not found"})
+            if row["status"] == "reviewed":
+                return self._send(409, {"error": "inspection already reviewed"})
+            for did, st in clean_disp:
+                disc = conn.execute(
+                    "SELECT * FROM discrepancies WHERE id=? AND "
+                    "inspection_id=?", (did, iid)).fetchone()
+                if not disc:
+                    raise ValidationError(
+                        f"discrepancy {did} does not belong to this "
+                        "inspection")
+                if disc["status"] != st:
+                    conn.execute("UPDATE discrepancies SET status=? "
+                                 "WHERE id=?", (st, did))
+                    audit(conn, row["vehicle_id"], user["display_name"],
+                          "inspection-review", field="discrepancy",
+                          old=disc["status"], new=st,
+                          detail=f"discrepancy {did}")
+            conn.execute("UPDATE inspections SET status='reviewed',"
+                         " reviewed_by=?, reviewed_at=? WHERE id=?",
+                         (user["display_name"], now_iso(), iid))
+            audit(conn, row["vehicle_id"], user["display_name"],
+                  "inspection-review",
+                  detail=f"1800 inspection reviewed ({row['month_year']})")
+        full = self._inspection_full(conn, iid)
+        return self._send(200, {"inspection": full["inspection"]})
+
+    def _attach_vehicle_photo(self, conn, path, data, user):
+        vid = self._path_id(path, "/api/vehicles/")
+        if vid is None:
+            return self._send(404, {"error": "vehicle not found"})
+        raw, mime = parse_photo_data_url(data)
+        with immediate_tx(conn):
+            veh = conn.execute("SELECT photo FROM vehicles WHERE id=?",
+                               (vid,)).fetchone()
+            if not veh:
+                return self._send(404, {"error": "vehicle not found"})
+            had = veh["photo"] is not None
+            conn.execute("UPDATE vehicles SET photo=?, photo_mime=?,"
+                         " updated_by=?, updated_at=? WHERE id=?",
+                         (raw, mime, user["display_name"], now_iso(), vid))
+            audit(conn, vid, user["display_name"], "photo", field="photo",
+                  old="present" if had else "", new="present",
+                  detail="vehicle photo attached" if not had
+                         else "vehicle photo replaced")
+        return self._send(200, {"ok": True, "photo": True})
+
+    def _attach_discrepancy_photo(self, conn, path, data, user):
+        parts = path.strip("/").split("/")
+        try:
+            iid, did = int(parts[2]), int(parts[4])
+        except (IndexError, ValueError):
+            return self._send(404, {"error": "photo not found"})
+        # int64 guard (v1.2 fix pass): absurd path ids 404, never 500
+        if not (-(2 ** 63) <= iid <= 2 ** 63 - 1) or \
+                not (-(2 ** 63) <= did <= 2 ** 63 - 1):
+            return self._send(404, {"error": "photo not found"})
+        raw, mime = parse_photo_data_url(data)
+        with immediate_tx(conn):
+            insp = conn.execute(
+                "SELECT vehicle_id, status FROM inspections WHERE id=?",
+                (iid,)).fetchone()
+            if not insp:
+                return self._send(404, {"error": "inspection not found"})
+            # review closes the record (v1.2 fix pass): no new photos
+            # on a reviewed inspection
+            if insp["status"] == "reviewed":
+                return self._send(409, {"error":
+                                        "inspection already reviewed"})
+            disc = conn.execute(
+                "SELECT id FROM discrepancies WHERE id=? AND inspection_id=?",
+                (did, iid)).fetchone()
+            if not disc:
+                return self._send(404, {"error": "discrepancy not found"})
+            n = conn.execute(
+                "SELECT COUNT(*) c FROM discrepancy_photos"
+                " WHERE discrepancy_id=?", (did,)).fetchone()["c"]
+            if n >= 4:
+                return self._send(409, {"error":
+                                        "discrepancy already has 4 photos"})
+            cur = conn.execute(
+                "INSERT INTO discrepancy_photos(discrepancy_id, image, mime,"
+                " created_at) VALUES (?,?,?,?)",
+                (did, raw, mime, now_iso()))
+            pid = cur.lastrowid
+            audit(conn, insp["vehicle_id"], user["display_name"],
+                  "inspection-photo",
+                  detail=f"photo added to discrepancy {did}"
+                         f" (inspection {iid})")
+        url = f"/api/inspections/{iid}/discrepancies/{did}/photos/{pid}"
+        return self._send(201, {"photo_id": pid, "url": url})
+
+    def _delete_discrepancy_photo(self, conn, path, user):
+        """Remove one discrepancy photo (v1.2 fix pass): without this,
+        a mistaken photo permanently occupied one of the 4 cap slots
+        until the 30-day purge. Any signed-in role, audited, 404s
+        matching the GET branch. Allowed on reviewed inspections too:
+        removal takes nothing away from the closed record."""
+        ids = self._route_id(path, "api", "inspections", "?",
+                             "discrepancies", "?", "photos", "?")
+        if ids is None:
+            return self._send(404, {"error": "photo not found"})
+        iid, did, pid = ids
+        with immediate_tx(conn):
+            prow = conn.execute(
+                "SELECT id FROM discrepancy_photos"
+                " WHERE id=? AND discrepancy_id=?",
+                (pid, did)).fetchone()
+            if not prow:
+                return self._send(404, {"error": "photo not found"})
+            disc = conn.execute(
+                "SELECT inspection_id FROM discrepancies WHERE id=?",
+                (did,)).fetchone()
+            if not disc or disc["inspection_id"] != iid:
+                return self._send(404, {"error": "photo not found"})
+            insp = conn.execute(
+                "SELECT vehicle_id FROM inspections WHERE id=?",
+                (iid,)).fetchone()
+            conn.execute("DELETE FROM discrepancy_photos WHERE id=?",
+                         (pid,))
+            audit(conn, insp["vehicle_id"] if insp else None,
+                  user["display_name"], "inspection-photo",
+                  detail=f"photo removed from discrepancy {did}"
+                         f" (inspection {iid})")
+        return self._send(200, {"ok": True})
+
     # ---- Excel import (two-step: preview, then confirm; Editors only)
     @staticmethod
     def _import_file_from(data):
@@ -1542,7 +2153,7 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT * FROM vehicles WHERE client_op=?",
                     (op_id,)).fetchone()
                 if existing:  # idempotent replay of a queued create
-                    return self._send(200, {"vehicle": dict(existing),
+                    return self._send(200, {"vehicle": public_vehicle(existing),
                                             "deduplicated": True})
             if bumper_taken(conn, clean["unit"], clean["bumper"]):
                 return self._send(409, {"error":
@@ -1566,7 +2177,7 @@ class Handler(BaseHTTPRequestHandler):
                         "SELECT * FROM vehicles WHERE client_op=?",
                         (op_id,)).fetchone()
                     if existing:
-                        return self._send(200, {"vehicle": dict(existing),
+                        return self._send(200, {"vehicle": public_vehicle(existing),
                                                 "deduplicated": True})
                 return self._send(409, {"error":
                     "bumper # already exists in unit"})
@@ -1574,7 +2185,7 @@ class Handler(BaseHTTPRequestHandler):
                   detail=f"{clean['unit']} {clean['bumper']} ({clean['type']})")
             row = conn.execute("SELECT * FROM vehicles WHERE id=?",
                                (cur.lastrowid,)).fetchone()
-        return self._send(201, {"vehicle": dict(row)})
+        return self._send(201, {"vehicle": public_vehicle(row)})
 
     # ---- API: update / delete
     def api_put(self, path):
@@ -1584,12 +2195,11 @@ class Handler(BaseHTTPRequestHandler):
             user = self._require(conn)
             if not user:
                 return
-            if path.startswith("/api/vehicles/"):
-                if not self._require_role(user, ("editor", "admin")):
+            ids = self._route_id(path, "api", "vehicles", "?")
+            if ids is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
-                vid = self._path_id(path, "/api/vehicles/")
-                if vid is None:
-                    return self._send(404, {"error": "vehicle not found"})
+                vid = ids[0]
                 with immediate_tx(conn):
                     row = conn.execute("SELECT * FROM vehicles WHERE id=?",
                                        (vid,)).fetchone()
@@ -1598,12 +2208,12 @@ class Handler(BaseHTTPRequestHandler):
                     code, payload = self._update_vehicle(
                         conn, dict(row), data, user)
                 return self._send(code, payload)
-            if path.startswith("/api/users/"):
-                if user["role"] != "admin":
-                    return self._send(403, {"error": "admin only"})
+            if self._route_id(path, "api", "users", "?") is not None:
+                if user["role"] != "vco":
+                    return self._send(403, {"error": "VCO only"})
                 return self._update_user(conn, path, data, user)
-            if path.startswith("/api/utcs/"):
-                if not self._require_role(user, ("editor", "admin")):
+            if self._route_id(path, "api", "utcs", "?") is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._update_utc(conn, path, data, user)
             self._send(404, {"error": "not found"})
@@ -1631,13 +2241,12 @@ class Handler(BaseHTTPRequestHandler):
             if data["role"] not in ROLES:
                 raise ValidationError("invalid role")
             if data["role"] != target["role"]:
-                if target["role"] == "admin":
-                    admins = conn.execute(
-                        "SELECT COUNT(*) c FROM users WHERE role='admin'"
-                        ).fetchone()["c"]
-                    if admins <= 1:
-                        raise ValidationError(
-                            "cannot demote the last Admin", status=400)
+                # the last-VCO guard itself is enforced inside the
+                # write transaction below (fresh read under the lock);
+                # checking here, before BEGIN IMMEDIATE, let two
+                # concurrent demotions both read count=2 and both
+                # proceed, leaving ZERO VCOs with no in-app path back
+                # (v1.2 fix pass)
                 updates["role"] = data["role"]
                 changes.append(("role", target["role"], data["role"]))
         if "unit" in data:
@@ -1659,6 +2268,21 @@ class Handler(BaseHTTPRequestHandler):
         if not updates:
             return self._send(200, {"ok": True})  # no-op: no audit, no writes
         with immediate_tx(conn):
+            # last-VCO guard, re-checked under BEGIN IMMEDIATE where
+            # writers serialize: a concurrent demotion has already
+            # committed by the time this transaction starts, so the
+            # second demoter sees the true count and is refused.
+            fresh = conn.execute("SELECT * FROM users WHERE id=?",
+                                 (uid,)).fetchone()
+            if not fresh:
+                return self._send(404, {"error": "user not found"})
+            if "role" in updates and fresh["role"] == "vco":
+                vcos = conn.execute(
+                    "SELECT COUNT(*) c FROM users WHERE role='vco'"
+                    ).fetchone()["c"]
+                if vcos <= 1:
+                    raise ValidationError(
+                        "cannot demote the last VCO", status=400)
             sets = ", ".join(f"{k}=?" for k in updates)
             conn.execute(f"UPDATE users SET {sets} WHERE id=?",
                          (*updates.values(), uid))
@@ -1760,7 +2384,7 @@ class Handler(BaseHTTPRequestHandler):
                 (user["display_name"], now_iso(), vid))
         fresh = conn.execute("SELECT * FROM vehicles WHERE id=?",
                              (vid,)).fetchone()
-        out = {"vehicle": dict(fresh)}
+        out = {"vehicle": public_vehicle(fresh)}
         if conflict:
             out["conflict"] = conflict
         return 200, out
@@ -1771,12 +2395,35 @@ class Handler(BaseHTTPRequestHandler):
             user = self._require(conn)
             if not user:
                 return
-            if path.startswith("/api/vehicles/"):
-                if not self._require_role(user, ("editor", "admin")):
+            ids = self._route_id(path, "api", "vehicles", "?", "photo")
+            if ids is not None:
+                # any signed-in role may remove a vehicle photo
+                vid = ids[0]
+                with immediate_tx(conn):
+                    veh = conn.execute(
+                        "SELECT photo FROM vehicles WHERE id=?",
+                        (vid,)).fetchone()
+                    if not veh:
+                        return self._send(404, {"error": "vehicle not found"})
+                    if veh["photo"] is not None:
+                        conn.execute(
+                            "UPDATE vehicles SET photo=NULL, photo_mime='',"
+                            " updated_by=?, updated_at=? WHERE id=?",
+                            (user["display_name"], now_iso(), vid))
+                        audit(conn, vid, user["display_name"], "photo",
+                              field="photo", old="present", new="",
+                              detail="vehicle photo removed")
+                return self._send(200, {"ok": True, "photo": False})
+            if self._route_id(path, "api", "inspections", "?",
+                              "discrepancies", "?", "photos",
+                              "?") is not None:
+                # any signed-in role may remove a discrepancy photo
+                return self._delete_discrepancy_photo(conn, path, user)
+            ids = self._route_id(path, "api", "vehicles", "?")
+            if ids is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
-                vid = self._path_id(path, "/api/vehicles/")
-                if vid is None:
-                    return self._send(404, {"error": "vehicle not found"})
+                vid = ids[0]
                 with immediate_tx(conn):
                     row = conn.execute("SELECT * FROM vehicles WHERE id=?",
                                        (vid,)).fetchone()
@@ -1791,16 +2438,18 @@ class Handler(BaseHTTPRequestHandler):
                     close_open_conflicts(conn, vid, user["display_name"],
                                          "vehicle deleted")
                 return self._send(200, {"ok": True})
-            if path.startswith("/api/authorizations/"):
-                if not self._require_role(user, ("editor", "admin")):
+            if self._route_id(path, "api", "authorizations",
+                              "?") is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._delete_authorization(conn, path, user)
-            if path.startswith("/api/utcs/") and "/vehicles/" in path:
-                if not self._require_role(user, ("editor", "admin")):
+            if self._route_id(path, "api", "utcs", "?",
+                              "vehicles", "?") is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._utc_remove_vehicle(conn, path, user)
-            if path.startswith("/api/utcs/"):
-                if not self._require_role(user, ("editor", "admin")):
+            if self._route_id(path, "api", "utcs", "?") is not None:
+                if not self._require_role(user, ("editor", "vco")):
                     return
                 return self._delete_utc(conn, path, user)
             self._send(404, {"error": "not found"})
@@ -1819,6 +2468,14 @@ def public_user(u):
             "display_name": u["display_name"], "unit": u["unit"],
             "role": u["role"]}
 
+def public_vehicle(v):
+    """Vehicle dict safe for JSON: photo bytes never leave the server —
+    only a presence flag (1/0)."""
+    d = dict(v)
+    d["photo"] = 1 if d.get("photo") is not None else 0
+    d.pop("photo_mime", None)
+    return d
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8420)
@@ -1828,6 +2485,9 @@ def main():
     Handler.db_path = args.db
     conn = connect(args.db)
     init_db(conn)
+    purged = purge_expired_inspections(conn)
+    if purged:
+        print(f"Skyline retention purge: {purged} inspection(s) removed")
     conn.close()
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Skyline running at http://{args.host}:{args.port}  (db: {args.db})")
