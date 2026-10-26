@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Skyline — Fleet Management — Web Sim</title>
 <meta name="theme-color" content="#17122b">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icons/favicon-32.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -21,11 +24,11 @@
 
     <form id="setup-form" class="hidden">
       <h2>First-run setup</h2>
-      <p class="hint">No accounts exist yet. Create the first Admin account.</p>
+      <p class="hint">No accounts exist yet. Create the first VCO account.</p>
       <input id="su-username" placeholder="Username" aria-label="Username" autocomplete="username" required>
       <input id="su-display" placeholder="Display name (e.g. Davis)" aria-label="Display name" required>
       <input id="su-password" type="password" placeholder="Password (min 8 characters)" aria-label="Password" autocomplete="new-password" required>
-      <button class="btn primary" type="submit">Create Admin &amp; sign in</button>
+      <button class="btn primary" type="submit">Create VCO &amp; sign in</button>
     </form>
 
     <form id="login-form">
@@ -34,7 +37,7 @@
       <button class="btn primary" type="submit">Sign in</button>
     </form>
     <p id="auth-error" class="error"></p>
-    <p class="hint small">Accounts are created by an Admin — there is no public sign-up.</p>
+    <p class="hint small">Accounts are created by a VCO — there is no public sign-up.</p>
   </div>
 </section>
 
@@ -45,7 +48,8 @@
       <nav>
         <button class="navbtn" data-nav="audit">Audit</button>
         <button class="navbtn" id="nav-conflicts" data-nav="conflicts">Conflicts <span id="conflict-badge" class="badge hidden">0</span></button>
-        <button class="navbtn" id="nav-admin" data-nav="admin">Admin</button>
+        <button class="navbtn" id="nav-inspections" data-nav="inspections">Inspections <span id="inspection-badge" class="badge hidden">0</span></button>
+        <button class="navbtn" id="nav-vco" data-nav="vco">VCO</button>
         <button class="navbtn" id="btn-print">Rollup</button>
         <a class="navbtn" id="btn-csv" href="/api/export.csv">CSV</a>
       </nav>
@@ -65,7 +69,52 @@
   <main>
     <!-- HOME -->
     <section id="view-home" class="view">
+      <div id="home-insp-banner" class="hidden" style="margin-bottom:14px"></div>
       <div id="tiles"></div>
+    </section>
+
+    <!-- INSPECTIONS -->
+    <section id="view-inspections" class="view hidden">
+      <button class="backbtn" data-back>← All units</button>
+      <h2>1800 inspections</h2>
+      <p class="hint">AF Form 1800 — Operator's Inspection Guide and Trouble Report.
+      Unreviewed inspections list first. Inspections are online-only; the VCO
+      review queue is the notification to the org admin (there is no email
+      in Skyline).</p>
+      <div class="toolbar">
+        <select id="insp-filter-unit" aria-label="Filter inspections by unit">
+          <option>ALL</option>
+          <option>18 ASOG</option>
+          <option>14 ASOS</option>
+          <option>15 ASOS</option>
+          <option>19 ASOS</option>
+          <option>20 ASOS</option>
+        </select>
+        <select id="insp-filter-reviewed" aria-label="Filter inspections by review state">
+          <option value="ALL">All</option>
+          <option value="UNREVIEWED">Unreviewed only</option>
+        </select>
+      </div>
+      <div id="inspection-review"></div>
+      <div id="inspection-list"></div>
+    </section>
+
+    <!-- NEW INSPECTION -->
+    <section id="view-new-inspection" class="view hidden">
+      <button class="backbtn" id="insp-new-back">← Back to vehicle</button>
+      <h2>New 1800 inspection</h2>
+      <div id="new-inspection-body"></div>
+    </section>
+
+    <!-- INSPECTION FORM (printable) -->
+    <section id="view-inspection-form" class="view hidden">
+      <button class="backbtn" id="insp-form-back">← All inspections</button>
+      <div class="row">
+        <button class="btn primary" id="btn-insp-print">Print / Save as PDF</button>
+        <span class="hint">Opens the browser print dialog — choose Save as PDF for a downloadable form.</span>
+      </div>
+      <div id="inspection-form-body" style="margin-top:16px"></div>
+      <div id="inspection-photo-tools" style="margin-top:16px"></div>
     </section>
 
     <!-- UNIT -->
@@ -188,10 +237,10 @@
       <div id="conflict-list"></div>
     </section>
 
-    <!-- ADMIN -->
-    <section id="view-admin" class="view hidden">
+    <!-- VCO -->
+    <section id="view-vco" class="view hidden">
       <button class="backbtn" data-back>← All units</button>
-      <h2>Admin</h2>
+      <h2>VCO</h2>
 
       <div class="card">
         <h3>Create account</h3>
@@ -202,9 +251,9 @@
             <input id="uf-password" type="password" placeholder="Password (min 8)" aria-label="New account password" required>
             <select id="uf-unit" aria-label="New account unit"></select>
             <select id="uf-role" aria-label="New account role">
-              <option value="viewer">Viewer — read all</option>
+              <option value="operator">Operator — read all + 1800 inspections</option>
               <option value="editor">Editor — update any unit</option>
-              <option value="admin">Admin — everything</option>
+              <option value="vco">VCO — everything + inspection review</option>
             </select>
           </div>
           <button class="btn primary" type="submit">Create account</button>
