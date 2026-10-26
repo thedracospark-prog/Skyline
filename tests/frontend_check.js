@@ -56,8 +56,8 @@ const DRIVER = `
     console.log("ok - " + msg);
   };
   fleet = { vehicles: [], authorizations: [], units: [] };
-  me = { display_name: "Ed Editor", username: "ed", unit: "15 ASOS",
-         role: "editor" };
+  me = { display_name: "Walt VCO", username: "walt", unit: "15 ASOS",
+         role: "vco" };
 
   /* ---- item 11: offline create + temp-id update drains cleanly ---- */
   _nav.onLine = false;
@@ -68,7 +68,7 @@ const DRIVER = `
     id: "tmp-1", unit: "14 ASOS", bumper: "Q-1", type: "JLTV",
     status: "FMC", mileage: 10, location: "Pool", maint_due_date: "",
     maint_due_miles: null, notes: "", is_demo: 0,
-    updated_by: "Ed Editor", updated_at: "" }));
+    updated_by: "Walt VCO", updated_at: "" }));
   assert(queue.length === 1 && queue[0].opId, "offline create queued with op UUID");
   await queueOrSend("update",
     { _id: "tmp-1", base_status: "FMC", status: "NMC", notes: "deadlined" },
@@ -275,13 +275,13 @@ const DRIVER = `
   assert(ownStats("15 ASOS").authorizations === 9,
          "derived unit total includes the seeded authorization");
   currentUnit = "15 ASOS";
-  me.role = "editor";
+  me.role = "vco";
   renderAuthSection();
   const edHtml = document.querySelector("#unit-auth-list").innerHTML;
   assert(edHtml.includes('data-auth-remove="LMTV"'),
-         "unit-screen Remove control renders for an editor");
+         "unit-screen Remove control renders for a VCO");
   assert(edHtml.includes('data-auth-save="LMTV"'),
-         "unit-screen Save control still renders for an editor");
+         "unit-screen Save control still renders for a VCO");
   me.role = "operator";
   renderAuthSection();
   const vwHtml = document.querySelector("#unit-auth-list").innerHTML;
@@ -289,7 +289,7 @@ const DRIVER = `
          "no Remove control for an operator");
   assert(!vwHtml.includes("data-auth-save"),
          "no Save control for an operator");
-  me.role = "editor";
+  me.role = "vco";
   // the real endpoint, then the handler's exact local-state step
   // (filter the row out of fleet.authorizations) must drop the totals
   const del = await _origFetch(BASE + "/api/authorizations/" + seeded.id, {
@@ -320,10 +320,25 @@ const DRIVER = `
   /* ---- v1.2: role gating, 1800 form, photo visibility lock --------- */
   me.role = "operator";
   assert(!canEdit() && !isVCO(), "operator cannot edit and is not VCO");
-  me.role = "editor";
-  assert(canEdit() && !isVCO(), "editor can edit but is not VCO");
   me.role = "vco";
   assert(canEdit() && isVCO(), "VCO can edit and passes the VCO gate");
+
+  // v1.3: VCO screen renders the main-VCO badge + transfer control
+  // (seed a second VCO in Walt's unit first — a unit with only mains
+  // has no transfer target to render)
+  await _origFetch(BASE + "/api/users", { method: "POST",
+    headers: { Authorization: "Bearer " + token,
+               "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "walt2", password: "vco-pass-3",
+      display_name: "Walt Two", unit: "15 ASOS", role: "vco" }) });
+  fleet.authorizations = [];
+  await renderVCO();
+  const vcoHtml = document.querySelector("#user-list").innerHTML;
+  assert(vcoHtml.includes("Unit VCO"),
+         "VCO user list renders the Unit VCO badge");
+  assert(vcoHtml.includes("Make unit VCO") ||
+         vcoHtml.includes("data-make-main"),
+         "VCO user list renders the transfer control for a non-main VCO");
 
   // new-inspection form: exactly the 35 official items
   renderNewInspection({ id: 1, bumper: "A-1", type: "JLTV",
@@ -338,7 +353,7 @@ const DRIVER = `
   me.role = "vco";
   renderInspectionsList([
     { id: 2, bumper: "B-2", unit: "15 ASOS", status: "reviewed",
-      month_year: "October 2026", operator: "Ed Editor",
+      month_year: "October 2026", operator: "Eddie VCO",
       created_at: "2026-10-26T10:00:00+00:00", item_count: 4,
       fail_count: 1, reviewed_by: "Boss" },
     { id: 1, bumper: "A-1", unit: "14 ASOS", status: "submitted",
@@ -401,7 +416,7 @@ const DRIVER = `
   fleet.vehicles = [{ id: 1, unit: "14 ASOS", bumper: "A-1", type: "JLTV",
     status: "FMC", mileage: 100, location: "Pool", maint_due_date: "",
     maint_due_miles: null, notes: "", is_demo: 0, photo: 1,
-    updated_by: "Ed Editor", updated_at: "" }];
+    updated_by: "Walt VCO", updated_at: "" }];
   fleet.authorizations = [];
   currentUnit = "14 ASOS"; statusFilter = "ALL";
   document.querySelector("#veh-search").value = "";
@@ -448,10 +463,10 @@ async function waitUp(tries = 60) {
         unit: "18 ASOG" });
     const vco = setup.token;
     await j("POST", "/api/users",
-      { username: "ed", password: "editor-pass-1", display_name: "Ed Editor",
-        unit: "15 ASOS", role: "editor" }, vco);
+      { username: "walt", password: "vco-pass-2", display_name: "Walt VCO",
+        unit: "15 ASOS", role: "vco" }, vco);
     const [, login] = await j("POST", "/api/login",
-      { username: "ed", password: "editor-pass-1" });
+      { username: "walt", password: "vco-pass-2" });
     // seed a live MC-rate TIE for the F2 parity check: 19 ASOS gets
     // 16 vehicles, exactly 1 FMC (1/16 = 6.25% — banker's would say
     // 6.2, half-up says 6.3; server and client must agree on 6.3)
@@ -461,12 +476,25 @@ async function waitUp(tries = 60) {
           status: i === 0 ? "FMC" : "NMC" }, vco);
       if (vc !== 201) throw new Error("tie seed failed: HTTP " + vc);
     }
-    const user = { id: 2, username: "ed", display_name: "Ed Editor",
-                   unit: "15 ASOS", role: "editor" };
+    const user = { id: 2, username: "walt", display_name: "Walt VCO",
+                   unit: "15 ASOS", role: "vco", is_main_vco: 1 };
 
     let src = fs.readFileSync(path.join(ROOT, "static", "app.js"), "utf8");
     const cut = src.indexOf("/* ============================================================ wiring */");
     if (cut < 0) throw new Error("wiring marker not found in app.js");
+    // v1.3 fix pass (S-E): the VCO view + VCO submit handlers are
+    // guarded client-side (defense-in-depth; the server 403s anyway).
+    // The wiring section is cut from the child run below, so these
+    // are source-text assertions, not runtime ones.
+    const wiring = src.slice(cut);
+    const guardRe = (id) => new RegExp(
+      id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+      "[\\s\\S]{0,200}?if \\(!canEdit\\(\\)\\) return;");
+    for (const id of ["#add-form", "#user-form", "#auth-form", "#utc-form"])
+      if (!guardRe(id).test(wiring))
+        throw new Error("missing canEdit() guard on " + id + " submit");
+    if (!/if \(v === "vco"\) \{\s*\/\/ defense-in-depth[\s\S]{0,400}?if \(!isVCO\(\)\)/.test(wiring))
+      throw new Error("missing isVCO() guard on the vco nav handler");
     src = src.slice(0, cut);
     const combined = STUBS
       .replace("__TOKEN__", JSON.stringify(login.token))
