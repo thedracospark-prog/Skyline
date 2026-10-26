@@ -27,7 +27,7 @@ function showNotice(msg, isError = true) {
   showNotice._t = setTimeout(() => n.classList.add("hidden"), 8000);
 }
 
-const canEdit = () => me && (me.role === "editor" || me.role === "vco");
+const canEdit = () => me && me.role === "vco";  // v1.3: only two roles; VCOs edit
 const isVCO = () => me && me.role === "vco";
 
 /* DAF Form 1800 — the official 35 checklist items, verbatim (mirrors
@@ -365,9 +365,9 @@ function showView(id) {
 function render() {
   if (!me) return showView("view-auth");
   $("#user-chip").innerHTML =
-    `<b>${esc(me.display_name)}</b> · ${esc(me.unit || "—")} · ${esc(me.role)}`;
+    `<b>${esc(me.display_name)}</b>${me.is_main_vco ? ' <span class="main-vco">★ Unit VCO</span>' : ""} · ${esc(me.unit || "—")} · ${esc(me.role)}`;
   $("#nav-vco").classList.toggle("hidden", !isVCO());
-  $$(".editor-only").forEach(b => b.classList.toggle("hidden", !canEdit()));
+  $$(".vco-only").forEach(b => b.classList.toggle("hidden", !canEdit()));
   renderTiles();
   if (currentUtcId && !$("#view-utc").classList.contains("hidden")) renderUtc();
   else if (currentUnit) renderUnit();
@@ -440,6 +440,7 @@ function renderUnit() {
     <div class="chip">Authorizations <b>${st.authorizations}</b></div>
     <div class="chip">MC rate <b class="mc ${mcClass(st.mc_rate, st.on_hand)}">${st.on_hand ? st.mc_rate + "%" : "—"}</b></div>
     <div class="chip">FMC <b>${st.fmc}</b> · PMC <b>${st.pmc}</b> · NMC <b>${st.nmc}</b></div>
+    ${(fleet.main_vcos && fleet.main_vcos[name]) ? `<div class="chip">★ Unit VCO <b>${esc(fleet.main_vcos[name])}</b></div>` : ""}
     ${st.includes_demo ? '<div class="chip"><span class="sampletag">incl. SAMPLE data</span></div>' : ""}`;
   // 18 ASOG additionally shows the GROUP rollup (all five units)
   const gs = $("#unit-group-summary");
@@ -673,7 +674,7 @@ function renderUtc() {
           <span><b>${esc(v.bumper)}</b> · ${esc(v.type)} · ${v.status}</span></label>`).join("")
       : '<p class="hint">Every vehicle in this unit is already in the UTC.</p>')
     : "";
-  $("#utc-editor-tools").classList.toggle("hidden", !editable);
+  $("#utc-vco-tools").classList.toggle("hidden", !editable);
   const codeIn = $("#utc-edit-code"), titleIn = $("#utc-edit-title");
   if (codeIn) codeIn.value = u.code;
   if (titleIn) titleIn.value = u.title || "";
@@ -948,7 +949,7 @@ function openVehicle(v) {
         <span id="vf-msg" class="hint"></span></div>` : ""}
     </div>`;
   $("#vf-inspection").addEventListener("click", () => openNewInspection(v));
-  // vehicle photo: every signed-in role, online-only (never queued)
+  // vehicle photo: operator or VCO, online-only (never queued)
   // the re-render above discarded the previous photo <img>: its blob
   // URL is unreferenced now and safe to revoke (v1.2 fix pass)
   revokeBlobUrl(currentVehiclePhotoUrl);
@@ -1086,7 +1087,7 @@ function renderConflicts() {
       ${canEdit() ? `<div class="row" style="margin-top:10px">
         <button class="btn" data-resolve="keep" data-cid="${c.id}">Keep ${esc(c.current)}</button>
         <button class="btn primary" data-resolve="apply" data-cid="${c.id}">Apply ${esc(c.attempted)}</button>
-      </div>` : '<p class="hint">An Editor must resolve this.</p>'}
+      </div>` : '<p class="hint">A VCO must resolve this.</p>'}
     </div>`;
   }).join("") || '<p class="hint">No open conflicts. 🎉</p>';
   $$("[data-resolve]").forEach(b => b.addEventListener("click", async () => {
@@ -1109,15 +1110,17 @@ async function renderVCO() {
   $("#uf-unit").innerHTML = unitOpts;
   $("#af-unit").innerHTML = UNITS.map(u => `<option>${u}</option>`).join("");
   const r = await api("/api/users").catch(() => ({users: []}));
-  $("#user-list").innerHTML = `<table><tr><th>User</th><th>Unit</th><th>Role</th></tr>` +
+  $("#user-list").innerHTML = `<table><tr><th>User</th><th>Unit</th><th>Role</th><th></th></tr>` +
     r.users.map(u => `<tr><td><b>${esc(u.display_name)}</b> <span style="color:var(--dim)">@${esc(u.username)}</span></td>
       <td>${esc(u.unit || "—")}</td><td>
       <select class="inline" data-role-for="${u.id}">
-        ${[["operator", "Operator — read all + 1800 inspections"],
-            ["editor", "Editor — update any unit"],
+        ${[["operator", "Operator — read all + 1800 inspections + photos"],
             ["vco", "VCO — everything + inspection review"]].map(([role, label]) =>
           `<option value="${role}" ${role === u.role ? "selected" : ""}>${label}</option>`).join("")}
-      </select></td></tr>`).join("") + `</table>`;
+      </select>${u.is_main_vco ? ' <span class="main-vco">★ Unit VCO</span>' : ""}</td>
+      <td>${u.role === "vco" && !u.is_main_vco ? `<button class="btn" data-make-main="${u.id}">★ Make unit VCO</button> ` : ""}
+      <button class="btn danger" data-user-del="${u.id}">Remove</button></td></tr>`).join("") +
+    `</table><p class="hint">★ Unit VCO is honorific only — all VCOs have identical rights, and there is no cap on how many VCOs a unit may have. The last VCO cannot be demoted or removed.</p>`;
   $$("[data-role-for]").forEach(s => s.addEventListener("change", async () => {
     try {
       await api("/api/users/" + s.dataset.roleFor,
@@ -1127,6 +1130,27 @@ async function renderVCO() {
       showNotice("Role change failed: " + (e.message || e.status));
       renderVCO();  // revert the select to the server's truth
     }
+  }));
+  // v1.3 main-VCO transfer (VCO-only, audited server-side) + user removal
+  $$("[data-make-main]").forEach(b => b.addEventListener("click", async () => {
+    try {
+      await api("/api/users/" + b.dataset.makeMain,
+                {method: "PUT", body: {is_main_vco: true}});
+      showNotice("Unit VCO transferred.", false);
+    } catch (e) {
+      showNotice("Transfer failed: " + (e.message || e.status));
+    }
+    renderVCO();
+  }));
+  $$("[data-user-del]").forEach(b => b.addEventListener("click", async () => {
+    if (!confirm("Remove this account? The last VCO cannot be removed.")) return;
+    try {
+      await api("/api/users/" + b.dataset.userDel, {method: "DELETE"});
+      showNotice("Account removed.", false);
+    } catch (e) {
+      showNotice("Remove failed: " + (e.message || e.status));
+    }
+    renderVCO();
   }));
   $("#auth-list").innerHTML = `<table><tr><th>Unit</th><th>Type</th><th>Authorized</th><th>On hand</th><th></th></tr>` +
     fleet.authorizations.map(a => {
@@ -1173,7 +1197,7 @@ function renderPrint() {
 }
 
 /* ============================================================ AF Form 1800 inspections
-   Submitting is open to every signed-in role (operators included);
+   Operators and VCOs submit inspections;
    review is VCO-only. Inspections are ONLINE-ONLY in the real app
    (never queued): the UI says so plainly when offline, the same
    honesty pattern as vehicle deletes and UTC mutations. The web sim
@@ -1307,7 +1331,7 @@ function renderNewInspection(v) {
       Check the items that apply; mark pass/fail and add a comment per item.
       Failed items become discrepancies for the VCO review queue. Submitting
       updates this vehicle's mileage/hours immediately; it never changes the
-      FMC/PMC/NMC status — that stays an editor/VCO action.
+      FMC/PMC/NMC status — that stays a VCO action.
       Inspections are online-only.</p>
       <div class="grid2">
         <label>Month / Year <input id="insp-month" value="${esc(monthDefault)}" aria-label="Month and year"></label>
@@ -1525,7 +1549,7 @@ function renderDiscPhotoTools(full) {
   const discs = full.discrepancies || [];
   if (!discs.length) { wrap.innerHTML = ""; return; }
   wrap.innerHTML = `<div class="card"><h3>Discrepancy photos</h3>
-    <p class="hint">Attach up to 4 photos per discrepancy (any signed-in role).
+    <p class="hint">Attach up to 4 photos per discrepancy (operator or VCO).
     Photos print with the form. Uploads are online-only.</p>
     ${discs.map(d => {
       const n = (d.photos || []).length;
@@ -1680,7 +1704,13 @@ function wire() {
     const v = b.dataset.nav;
     if (v === "audit") { showView("view-audit"); renderAudit(); }
     if (v === "conflicts") { await loadConflicts(); showView("view-conflicts"); renderConflicts(); }
-    if (v === "vco") { showView("view-vco"); renderVCO(); }
+    if (v === "vco") {
+      // defense-in-depth: the button is hidden for operators, but
+      // the view itself must not render for a non-VCO either
+      // (the server still 403s every VCO write regardless).
+      if (!isVCO()) { showNotice("That screen is VCO-only."); return; }
+      showView("view-vco"); renderVCO();
+    }
     if (v === "inspections") { showView("view-inspections"); renderInspections(); }
   }));
   $("#veh-back").addEventListener("click", () => openUnit(currentUnit || "18 ASOG"));
@@ -1702,6 +1732,7 @@ function wire() {
     $("#add-form").classList.add("hidden"));
   $("#add-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!canEdit()) return;  // defense-in-depth; server 403s anyway
     const unit = $("#av-unit").value;
     if (!unit) { showNotice("Pick which squadron this vehicle belongs to."); return; }
     const tempId = "tmp-" + Date.now();
@@ -1720,6 +1751,7 @@ function wire() {
   });
   $("#user-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!canEdit()) return;  // defense-in-depth; server 403s anyway
     try {
       await api("/api/users", {method: "POST", body: {
         username: $("#uf-username").value.trim(),
@@ -1732,6 +1764,7 @@ function wire() {
   });
   $("#auth-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!canEdit()) return;  // defense-in-depth; server 403s anyway
     const payload = {unit: $("#af-unit").value, vehicle_type: $("#af-type").value.trim(),
       authorized: Number($("#af-count").value)};
     await queueOrSend("authorization", payload, () => {
@@ -1824,6 +1857,7 @@ function wire() {
     $("#utc-form").classList.toggle("hidden"));
   $("#utc-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!canEdit()) return;  // defense-in-depth; server 403s anyway
     if (!utcOnlineOnly()) return;
     try {
       const res = await api("/api/utcs", {method: "POST", body: {
