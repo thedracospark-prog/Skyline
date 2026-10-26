@@ -27,8 +27,49 @@ function showNotice(msg, isError = true) {
   showNotice._t = setTimeout(() => n.classList.add("hidden"), 8000);
 }
 
-const canEdit = () => me && (me.role === "editor" || me.role === "admin");
-const isAdmin = () => me && me.role === "admin";
+const canEdit = () => me && (me.role === "editor" || me.role === "vco");
+const isVCO = () => me && me.role === "vco";
+
+/* DAF Form 1800 — the official 35 checklist items, verbatim (mirrors
+   server.py's INSPECTION_ITEMS; the server stores its own fixed text,
+   so a drift here only affects the form's labels, never the record). */
+const INSPECTION_ITEMS = [
+  "Cleanliness/damage/missing items (interior/exterior); unusual noise or occurrence (during operation)",
+  "Leaks/fluid levels (oil/coolant/hydraulic/transmission/brake fluid)",
+  "Safety devices (wiring/lights/horn/warning devices/sirens/reflectors/mirrors/seatbelts)",
+  "Batteries (fluid/damage/cleanliness/security); instruments/gauges (operation & readings)",
+  "Drive belts (fraying/cracking/tension); pulley/motor (air/hydraulic/electrical)",
+  "Steering/springs/shackles (free play/excessive wear)",
+  "Exhaust system/spark arrestors (damage/leaks)",
+  "Tires/wheels (lug nuts/cracks); tracks",
+  "Heater/defroster/air-conditioner; auxiliary generators/auxiliary heaters",
+  "Brakes (servicing/parking); clutches (operation); accelerator pedal (damage/worn)",
+  "Windshield (wipers/washer fluid/cracks)",
+  "Hydraulic hoses (damage/frayed); cylinders/valves (damage/leaks)",
+  "Cold weather aids (ether/alcohol injector, battery heater, oil/engine heater, coolant heater, etc.)",
+  "Power take-off (PTO)",
+  "Winch/tow connections",
+  "Air tanks (drain daily or after operation)",
+  "Mast tines/rollerized tines",
+  "Rollers/power conveyors/rails/ladders/catwalks/cargo bed",
+  "Bed (K-load): top/half/lowest/roll/shift/yaw (check position)",
+  "Lower lobe cab shift (operation)",
+  "Emergency stand-by system",
+  'Markings — check legibility ("WATCHSTEP" stencil, etc.)',
+  "Chutes/augers/fan blades/wear shoes",
+  "Drums/crowns/fair leads",
+  "Booms/outriggers/basket/platform/turntable (check for cracks & damage)",
+  "Brooms/sprockets/chains",
+  "Blades/reels/sickle bars/flails",
+  "Kettle/hoisting mechanism/agitators",
+  "Sheaves/blocks/cables",
+  "Mould boards/bowls/cutting edges/skids",
+  "Pumps/piping/discharge valves (leaks, corrosion); spare bars",
+  "Firefighting specialized equipment/safety devices",
+  "Firefighting system operation & foam/water levels",
+  "Auxiliary firefighting system",
+  "Hose/reels/handlines/turrets",
+];
 
 /* ============================================================ API layer */
 async function api(path, opts = {}) {
@@ -209,6 +250,7 @@ async function refreshFleet(rerender = true) {
     syncFailed = false;
     saveSnapshot();
     loadConflicts();
+    loadInspectionBadge();
     if (rerender) render();
     renderSyncPill();
   } catch (e) {
@@ -296,7 +338,23 @@ function mcClass(rate, onHand) {
 }
 
 /* ============================================================ views */
+let currentViewId = null;
 function showView(id) {
+  // leaving a photo view discards its images: revoke their blob URLs
+  // so SPA navigation does not leak one per visit (v1.2 fix pass).
+  // Same-view calls (re-renders) do NOT revoke — the photos are
+  // still on screen.
+  if (currentViewId === "view-inspection-form" &&
+      id !== "view-inspection-form") {
+    revokePhotoUrls(currentInspectionPhotoUrls);
+    currentInspectionPhotoUrls = null;
+  }
+  if (currentViewId === "view-vehicle-detail" &&
+      id !== "view-vehicle-detail") {
+    revokeBlobUrl(currentVehiclePhotoUrl);
+    currentVehiclePhotoUrl = null;
+  }
+  currentViewId = id;
   $$("main .view, #view-auth").forEach(v => v.classList.add("hidden"));
   $("#app").classList.toggle("hidden", id === "view-auth");
   const el = $("#" + id);
@@ -308,7 +366,7 @@ function render() {
   if (!me) return showView("view-auth");
   $("#user-chip").innerHTML =
     `<b>${esc(me.display_name)}</b> · ${esc(me.unit || "—")} · ${esc(me.role)}`;
-  $("#nav-admin").classList.toggle("hidden", !isAdmin());
+  $("#nav-vco").classList.toggle("hidden", !isVCO());
   $$(".editor-only").forEach(b => b.classList.toggle("hidden", !canEdit()));
   renderTiles();
   if (currentUtcId && !$("#view-utc").classList.contains("hidden")) renderUtc();
@@ -529,7 +587,7 @@ function renderVehicleList() {
   const list = $("#vehicle-list");
   if (!vehs.length) {
     list.innerHTML = `<div class="card hint">No vehicles match. ` +
-      (fleet.vehicles.length ? "" : "The fleet is empty — an Admin can load the demo fleet from the Admin screen.") + `</div>`;
+      (fleet.vehicles.length ? "" : "The fleet is empty — a VCO can load the demo fleet from the VCO screen.") + `</div>`;
     return;
   }
   list.innerHTML = vehs.map(v => {
@@ -868,11 +926,85 @@ function openVehicle(v) {
       </div>
       <div class="field"><div class="lbl">Notes</div>
         <input id="vf-notes" aria-label="Notes" value="${esc(v.notes || "")}" ${editable ? "" : "disabled"}></div>
+      <div class="field"><div class="lbl">Vehicle photo</div>
+        <div id="vf-photo-wrap">
+          ${v.photo ? `<img id="vf-photo-img" alt="Vehicle photo" style="max-width:100%;border-radius:12px">`
+                    : `<span class="hint">No photo yet.</span>`}
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input type="file" id="vf-photo-file" accept="image/*" capture="environment" aria-label="Vehicle photo file">
+          <button class="btn" id="vf-photo-upload">Attach photo</button>
+          ${v.photo ? `<button class="btn danger" id="vf-photo-remove">Remove photo</button>` : ""}
+        </div>
+        <span id="vf-photo-msg" class="hint"></span>
+      </div>
+      <div class="row">
+        <button class="btn" id="vf-inspection">New 1800 inspection</button>
+        <span class="hint">Operator's Inspection Guide — submits to the VCO review queue. Online-only.</span>
+      </div>
       ${editable ? `<div class="row">
         <button class="btn primary" id="vf-save">Save changes</button>
         <button class="btn danger" id="vf-delete">Delete vehicle</button>
         <span id="vf-msg" class="hint"></span></div>` : ""}
     </div>`;
+  $("#vf-inspection").addEventListener("click", () => openNewInspection(v));
+  // vehicle photo: every signed-in role, online-only (never queued)
+  // the re-render above discarded the previous photo <img>: its blob
+  // URL is unreferenced now and safe to revoke (v1.2 fix pass)
+  revokeBlobUrl(currentVehiclePhotoUrl);
+  currentVehiclePhotoUrl = null;
+  if (v.photo) {
+    const seq = ++vehiclePhotoSeq;
+    fetchPhoto("/api/vehicles/" + v.id + "/photo").then(src => {
+      // stale fetch (a newer render superseded this one): drop it
+      if (seq !== vehiclePhotoSeq || currentVehicle !== v) {
+        revokeBlobUrl(src); return;
+      }
+      const img = $("#vf-photo-img");
+      if (!img) { revokeBlobUrl(src); return; }
+      if (src) {
+        revokeBlobUrl(currentVehiclePhotoUrl);
+        currentVehiclePhotoUrl = src;
+        img.src = src;
+      }
+      else img.outerHTML = `<span class="hint">Vehicle photo needs a connection to load.</span>`;
+    });
+  }
+  $("#vf-photo-upload").addEventListener("click", async () => {
+    const file = $("#vf-photo-file").files[0];
+    if (!file) { showNotice("Choose a photo first."); return; }
+    if (!navigator.onLine) { showNotice("Vehicle photos are online-only — connect to attach. Nothing was queued."); return; }
+    $("#vf-photo-msg").textContent = "Processing…";
+    let dataUrl = await downscaleImage(file);
+    if (!dataUrl) {
+      try { dataUrl = await readFileAsDataURL(file); }
+      catch (e) { showNotice("Could not read that photo file."); return; }
+    }
+    // 3 MB client check on BOTH paths (v1.2 fix pass): the downscaled
+    // result used to skip it, leaving only the server 413 backstop
+    if (dataUrl.length > 3145728) { showNotice("That photo is too large (3 MB cap) — pick a smaller one."); $("#vf-photo-msg").textContent = ""; return; }
+    try {
+      await api("/api/vehicles/" + v.id + "/photo", {method: "POST", body: {image: dataUrl}});
+      showNotice("Vehicle photo attached.", false);
+      v.photo = 1;
+      const f = fleet.vehicles.find(x => x.id === v.id);
+      if (f) f.photo = 1;
+      openVehicle(v);
+    } catch (e) { showNotice("Photo upload failed: " + (e.message || e.status)); }
+  });
+  const rmBtn = $("#vf-photo-remove");
+  if (rmBtn) rmBtn.addEventListener("click", async () => {
+    if (!navigator.onLine) { showNotice("Vehicle photos are online-only — connect to remove."); return; }
+    if (!confirm("Remove this vehicle's photo?")) return;
+    try {
+      await api("/api/vehicles/" + v.id + "/photo", {method: "DELETE"});
+      showNotice("Vehicle photo removed.", false);
+      v.photo = 0;
+      const f = fleet.vehicles.find(x => x.id === v.id);
+      if (f) f.photo = 0;
+      openVehicle(v);
+    } catch (e) { showNotice("Photo remove failed: " + (e.message || e.status)); }
+  });
   if (!editable) return;
   let newStatus = v.status;
   $$("#vehicle-detail [data-status]").forEach(b => b.addEventListener("click", () => {
@@ -971,8 +1103,8 @@ function renderConflicts() {
   }));
 }
 
-/* ============================================================ admin */
-async function renderAdmin() {
+/* ============================================================ VCO */
+async function renderVCO() {
   const unitOpts = UNITS.map(u => `<option>${u}</option>`).join("");
   $("#uf-unit").innerHTML = unitOpts;
   $("#af-unit").innerHTML = UNITS.map(u => `<option>${u}</option>`).join("");
@@ -981,8 +1113,10 @@ async function renderAdmin() {
     r.users.map(u => `<tr><td><b>${esc(u.display_name)}</b> <span style="color:var(--dim)">@${esc(u.username)}</span></td>
       <td>${esc(u.unit || "—")}</td><td>
       <select class="inline" data-role-for="${u.id}">
-        ${["viewer", "editor", "admin"].map(role =>
-          `<option ${role === u.role ? "selected" : ""}>${role}</option>`).join("")}
+        ${[["operator", "Operator — read all + 1800 inspections"],
+            ["editor", "Editor — update any unit"],
+            ["vco", "VCO — everything + inspection review"]].map(([role, label]) =>
+          `<option value="${role}" ${role === u.role ? "selected" : ""}>${label}</option>`).join("")}
       </select></td></tr>`).join("") + `</table>`;
   $$("[data-role-for]").forEach(s => s.addEventListener("change", async () => {
     try {
@@ -991,7 +1125,7 @@ async function renderAdmin() {
       showNotice("Role updated.", false);
     } catch (e) {
       showNotice("Role change failed: " + (e.message || e.status));
-      renderAdmin();  // revert the select to the server's truth
+      renderVCO();  // revert the select to the server's truth
     }
   }));
   $("#auth-list").innerHTML = `<table><tr><th>Unit</th><th>Type</th><th>Authorized</th><th>On hand</th><th></th></tr>` +
@@ -1015,7 +1149,7 @@ async function renderAdmin() {
     }
     fleet.authorizations = fleet.authorizations.filter(x => x.id !== a.id);
     showNotice(`Authorization removed: ${a.unit} ${a.vehicle_type}.`, false);
-    renderAdmin();
+    renderVCO();
   }));
 }
 
@@ -1036,6 +1170,440 @@ function renderPrint() {
         <td>${esc(v.type)}</td><td>${v.status}</td><td>${v.mileage ?? ""}</td>
         <td>${esc(v.maint_due_date || "")}</td><td>${esc(v.location || "")}</td></tr>`).join("")}
       </table>`).join("")}`;
+}
+
+/* ============================================================ AF Form 1800 inspections
+   Submitting is open to every signed-in role (operators included);
+   review is VCO-only. Inspections are ONLINE-ONLY in the real app
+   (never queued): the UI says so plainly when offline, the same
+   honesty pattern as vehicle deletes and UTC mutations. The web sim
+   runs the same code against its in-memory backend, so inspections
+   work there too. The printable form is rendered CLIENT-SIDE from the
+   detail JSON (inspectionFormHTML) — no server HTML page — which is
+   what makes sim parity possible with the shared app.js. */
+let inspVehicle = null, inspList = [], currentInspectionFull = null;
+let currentInspectionPhotoUrls = null;
+let currentVehiclePhotoUrl = null, vehiclePhotoSeq = 0;
+let inspFilter = {unit: "ALL", reviewed: "ALL"};
+
+/* Fetch a photo endpoint with auth and return a usable <img> src:
+   real server -> image bytes -> blob URL; web sim -> data URL text
+   returned as-is. Null when unavailable (offline, missing, error). */
+async function fetchPhoto(url) {
+  let res;
+  try {
+    res = await fetch(url, {headers: {Authorization: "Bearer " + token}});
+  } catch (e) { return null; }
+  if (!res.ok) return null;
+  const ct = res.headers.get("Content-Type") || "";
+  if (ct.startsWith("image/")) {
+    const b = await res.blob();
+    return URL.createObjectURL(b);
+  }
+  const t = await res.text();
+  return t.startsWith("data:image/") ? t : null;
+}
+/* Revoke a blob URL only (sim data URLs pass through untouched), and
+   only once nothing displays it: revoking a displayed photo's URL
+   breaks the image, so revocation happens on replace (a new photo
+   set loads) or on leaving the view, never while on screen
+   (v1.2 fix pass). */
+function revokeBlobUrl(u) {
+  if (typeof u === "string" && u.startsWith("blob:")) {
+    try { URL.revokeObjectURL(u); } catch (e) { /* already revoked */ }
+  }
+}
+function revokePhotoUrls(urls) {
+  if (!urls) return;
+  revokeBlobUrl(urls.vehicle);
+  for (const list of Object.values(urls.byDiscrepancy || {}))
+    for (const u of list) revokeBlobUrl(u);
+}
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error("could not read file"));
+    r.readAsDataURL(file);
+  });
+}
+/* Downscale to max 1600 px (longest side), JPEG 0.8. Resolves null on
+   any failure so the caller can fall back to the original file. */
+function downscaleImage(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      try {
+        const MAX = 1600;
+        const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        c.toBlob((blob) => {
+          if (!blob) return resolve(null);
+          readFileAsDataURL(blob).then(resolve, () => resolve(null));
+        }, "image/jpeg", 0.8);
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+/* Pure: the printable 1800 form from a detail payload
+   {inspection, items, discrepancies}. Used on-screen AND for print
+   (via #print-area + window.print()), so both stay identical. */
+function inspectionFormHTML(full, photoUrls = {vehicle: null, byDiscrepancy: {}}) {
+  const insp = full.inspection;
+  const items = full.items || [];
+  const discs = full.discrepancies || [];
+  return `
+    <h1>AF Form 1800 — Operator's Inspection Guide and Trouble Report</h1>
+    ${photoUrls.vehicle ? `<div><img src="${esc(photoUrls.vehicle)}" alt="Vehicle photo" style="max-width:280px;border-radius:12px"></div>` : ""}
+    <p><b>Unit:</b> ${esc(insp.unit)} · <b>Vehicle:</b> ${esc(insp.bumper)} ·
+    <b>Month / Year:</b> ${esc(insp.month_year)} · <b>Operator:</b> ${esc(insp.operator)}</p>
+    <p><b>Submitted:</b> ${esc(fmtTime(insp.created_at))} ·
+    <b>Mileage / hours:</b> ${esc(insp.mileage_hours ?? "—")} ·
+    <b>Tire pressure front:</b> ${esc(insp.tire_front || "—")} ·
+    <b>rear:</b> ${esc(insp.tire_rear || "—")} ·
+    <b>Status:</b> ${esc(insp.status)}${insp.reviewed_by ? ` · <b>Reviewed by:</b> ${esc(insp.reviewed_by)} · ${esc(fmtTime(insp.reviewed_at))}` : ""}</p>
+    <h2>Inspection items (${items.length} · ${discs.length} discrepanc${discs.length === 1 ? "y" : "ies"})</h2>
+    <table><tr><th>#</th><th>Item</th><th>Applies</th><th>Result</th><th>Comment</th></tr>
+    ${items.map(it => `<tr><td>${it.item_no ?? "other"}</td><td>${esc(it.item_text)}</td>
+      <td>${it.applies ? "Yes" : "No"}</td><td>${it.applies ? esc(it.result || "") : "—"}</td>
+      <td>${esc(it.comment || "")}</td></tr>`).join("")}</table>
+    <h2>Discrepancies</h2>
+    ${discs.length ? `<table><tr><th>Item</th><th>Discrepancy</th><th>Date found</th><th>Miles / hours</th><th>Status</th><th>Photos</th></tr>
+    ${discs.map(d => {
+      const urls = (photoUrls.byDiscrepancy[d.id] || []);
+      return `<tr><td>${d.item_no ?? "other"}</td><td>${esc(d.description)}</td>
+      <td>${esc(d.date_found)}</td><td>${esc(d.miles_hours ?? "")}</td><td>${esc(d.status)}</td>
+      <td>${urls.length ? urls.map(u => `<img src="${esc(u)}" alt="Discrepancy photo" style="max-width:120px;border-radius:8px;margin:2px">`).join("") : "—"}</td></tr>`;
+    }).join("")}</table>`
+      : "<p>None — no discrepancies reported.</p>"}
+    <div class="siglines">
+      <p>Operator signature: ______________________________ &nbsp; Date: ______________</p>
+      <p>VCO signature: ______________________________ &nbsp; Date: ______________</p>
+    </div>
+    <p class="hint">Printed from Skyline. The operator's signature signifies accomplishment of the checks; the VCO signature records review.</p>`;
+}
+
+function openNewInspection(v) {
+  inspVehicle = v;
+  showView("view-new-inspection");
+  renderNewInspection(v);
+}
+
+function renderNewInspection(v) {
+  const monthDefault = new Date().toLocaleString("en-US", {month: "long", year: "numeric"});
+  $("#new-inspection-body").innerHTML = `
+    <div class="card">
+      <h3>${esc(v.bumper)} · ${esc(v.type)} · ${esc(v.unit)}</h3>
+      <p class="hint">AF Form 1800 — Operator's Inspection Guide and Trouble Report.
+      Check the items that apply; mark pass/fail and add a comment per item.
+      Failed items become discrepancies for the VCO review queue. Submitting
+      updates this vehicle's mileage/hours immediately; it never changes the
+      FMC/PMC/NMC status — that stays an editor/VCO action.
+      Inspections are online-only.</p>
+      <div class="grid2">
+        <label>Month / Year <input id="insp-month" value="${esc(monthDefault)}" aria-label="Month and year"></label>
+        <label>Mileage / hours <input id="insp-mileage" type="number" min="0" value="${esc(v.mileage ?? "")}" aria-label="Mileage or hours"></label>
+        <label>Tire pressure — front <input id="insp-tire-front" aria-label="Tire pressure front"></label>
+        <label>Tire pressure — rear <input id="insp-tire-rear" aria-label="Tire pressure rear"></label>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Checklist — 35 items</h3>
+      <div id="insp-items">
+      ${INSPECTION_ITEMS.map((text, i) => {
+        const n = i + 1;
+        return `<div class="insp-row">
+          <div class="insp-num">${n}</div>
+          <div class="insp-text">${esc(text)}</div>
+          <label class="insp-applies"><input type="checkbox" id="insp-applies-${n}" checked> Applies</label>
+          <div class="insp-result">
+            <label><input type="radio" name="insp-result-${n}" value="pass" checked> Pass</label>
+            <label><input type="radio" name="insp-result-${n}" value="fail"> Fail</label>
+          </div>
+          <input id="insp-comment-${n}" class="insp-comment" placeholder="Comment (add detail when failed)" aria-label="Comment for item ${n}">
+        </div>`;
+      }).join("")}
+      </div>
+      <div id="insp-others"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="insp-add-other">+ Add other item</button>
+        <span class="hint">Up to 10 locally added items (the form's "other" rows).</span>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary" id="insp-submit">Submit 1800 inspection</button>
+        <span id="insp-msg" class="hint"></span>
+      </div>
+    </div>`;
+  let otherCount = 0;
+  $("#insp-add-other").addEventListener("click", () => {
+    if (otherCount >= 10) { showNotice("At most 10 other items."); return; }
+    otherCount++;
+    const k = otherCount;
+    $("#insp-others").innerHTML += `<div class="insp-row insp-other-row">
+      <div class="insp-num">+</div>
+      <input class="insp-other-text" placeholder="Other item description (max 120 chars)" aria-label="Other item description">
+      <div class="insp-result">
+        <label><input type="radio" name="insp-other-result-${k}" value="pass" checked> Pass</label>
+        <label><input type="radio" name="insp-other-result-${k}" value="fail"> Fail</label>
+      </div>
+      <input class="insp-other-comment" placeholder="Comment" aria-label="Comment for other item">
+    </div>`;
+  });
+  $("#insp-submit").addEventListener("click", async () => {
+    if (!navigator.onLine) {
+      showNotice("Inspections are online-only — connect to submit. Nothing was queued.");
+      return;
+    }
+    const monthYear = $("#insp-month").value.trim();
+    if (!monthYear) { showNotice("Month / Year is required."); return; }
+    const items = [];
+    for (let n = 1; n <= INSPECTION_ITEMS.length; n++) {
+      const applies = $("#insp-applies-" + n).checked;
+      const checked = $$(`input[name="insp-result-${n}"]:checked`);
+      items.push({item_no: n, applies,
+        ...(applies ? {result: checked.length ? checked[0].value : "pass"} : {}),
+        comment: $("#insp-comment-" + n).value});
+    }
+    $$(".insp-other-row").forEach(row => {
+      const text = row.querySelector(".insp-other-text").value.trim();
+      if (!text) return;  // blank other rows are skipped, not submitted
+      const checked = row.querySelectorAll('input[type="radio"]:checked');
+      items.push({item_no: "other", text, applies: true,
+        result: checked.length ? checked[0].value : "pass",
+        comment: row.querySelector(".insp-other-comment").value});
+    });
+    try {
+      await api("/api/inspections", {method: "POST", body: {
+        vehicle_id: inspVehicle.id, month_year: monthYear,
+        mileage_hours: numOrNull($("#insp-mileage").value),
+        tire_front: $("#insp-tire-front").value.trim(),
+        tire_rear: $("#insp-tire-rear").value.trim(), items}});
+      showNotice(`1800 inspection submitted for ${inspVehicle.bumper} — the VCO review queue has it now.`, false);
+      await loadInspectionBadge();
+      showView("view-inspections");
+      renderInspections();
+    } catch (e) {
+      showNotice("Submit failed: " + (e.message || e.status));
+    }
+  });
+}
+
+async function renderInspections() {
+  const wrap = $("#inspection-list");
+  if (!navigator.onLine) {
+    wrap.innerHTML = `<div class="card hint">Inspections are online-only — connect to view or submit. (The fleet picture itself still works offline from the cached snapshot.)</div>`;
+    return;
+  }
+  try {
+    const r = await api("/api/inspections");
+    inspList = r.inspections || [];
+    applyInspFilters();
+  } catch (e) {
+    wrap.innerHTML = `<div class="card hint" style="color:var(--nmc)">Couldn't load inspections — ${esc(e.message || "network error")}.</div>`;
+  }
+}
+function applyInspFilters() {
+  let list = inspList;
+  if (inspFilter.unit !== "ALL") list = list.filter(i => i.unit === inspFilter.unit);
+  if (inspFilter.reviewed === "UNREVIEWED") list = list.filter(i => i.status === "submitted");
+  renderInspectionsList(list);
+}
+function renderInspectionsList(list) {
+  const wrap = $("#inspection-list");
+  if (!list.length) {
+    wrap.innerHTML = `<div class="card hint">No inspections match these filters.</div>`;
+    return;
+  }
+  wrap.innerHTML = list.map(insp => `
+    <div class="card">
+      <div class="top" style="display:flex;justify-content:space-between">
+        <span><b>${esc(insp.bumper)}</b> · ${esc(insp.unit)}</span>
+        <span class="st ${insp.status === "reviewed" ? "FMC" : "PMC"}">${esc(insp.status)}</span>
+      </div>
+      <p class="meta" style="color:var(--dim)">${esc(insp.month_year)} · by ${esc(insp.operator)} · ${esc(fmtTime(insp.created_at))} ·
+        ${insp.item_count ?? "?"} items · ${insp.fail_count ?? "?"} discrepanc${(insp.fail_count ?? 0) === 1 ? "y" : "ies"}${insp.reviewed_by ? ` · reviewed by ${esc(insp.reviewed_by)}` : ""}</p>
+      <div class="row">
+        <button class="btn" data-insp-form="${insp.id}">View / print form</button>
+        ${isVCO() && insp.status === "submitted" ? `<button class="btn primary" data-insp-review="${insp.id}">Review</button>` : ""}
+      </div>
+    </div>`).join("");
+  $$("[data-insp-form]").forEach(b => b.addEventListener("click", () => openInspectionForm(Number(b.dataset.inspForm))));
+  $$("[data-insp-review]").forEach(b => b.addEventListener("click", async () => {
+    try {
+      const full = await api("/api/inspections/" + b.dataset.inspReview);
+      renderReviewForm(full);
+    } catch (e) {
+      showNotice("Couldn't open that inspection: " + (e.message || e.status));
+    }
+  }));
+}
+function renderReviewForm(full) {
+  const insp = full.inspection;
+  const discs = full.discrepancies || [];
+  $("#inspection-review").innerHTML = `
+    <div class="card">
+      <h3>Review — ${esc(insp.bumper)} · ${esc(insp.month_year)}</h3>
+      <p class="hint">Set each discrepancy's disposition, then submit the review.
+      Anything left as "Leave open" stays open. This action is VCO-only.</p>
+      ${discs.length ? discs.map(d => `<div class="row" style="margin-bottom:8px">
+        <span style="flex:1">${esc(d.description)} <span style="color:var(--dim)">(item ${d.item_no ?? "other"})</span></span>
+        <select class="inline" data-disc-id="${d.id}">
+          <option value="">Leave open</option>
+          <option value="corrected">Corrected</option>
+          <option value="delayed">Delayed</option>
+          <option value="disposition">Disposition</option>
+        </select></div>`).join("")
+        : "<p>No discrepancies — nothing to disposition.</p>"}
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" id="insp-review-submit">Submit review</button>
+        <span id="insp-review-msg" class="hint"></span>
+      </div>
+    </div>`;
+  $("#insp-review-submit").addEventListener("click", async () => {
+    const dispositions = $$("#inspection-review [data-disc-id]")
+      .filter(s => s.value)
+      .map(s => ({discrepancy_id: Number(s.dataset.discId), status: s.value}));
+    try {
+      await api("/api/inspections/" + insp.id + "/review",
+                {method: "POST", body: {dispositions}});
+      showNotice(`Inspection for ${insp.bumper} reviewed.`, false);
+      $("#inspection-review").innerHTML = "";
+      await loadInspectionBadge();
+      renderInspections();
+    } catch (e) {
+      showNotice("Review failed: " + (e.message || e.status));
+    }
+  });
+}
+async function openInspectionForm(id) {
+  try {
+    const full = await api("/api/inspections/" + id);
+    const photoUrls = await loadInspectionPhotos(full);
+    // replace: the old set is no longer displayed once the form
+    // below re-renders, so revoke it now (v1.2 fix pass)
+    revokePhotoUrls(currentInspectionPhotoUrls);
+    currentInspectionFull = full;
+    currentInspectionPhotoUrls = photoUrls;
+    $("#inspection-form-body").innerHTML = inspectionFormHTML(full, photoUrls);
+    renderDiscPhotoTools(full);
+    showView("view-inspection-form");
+  } catch (e) {
+    showNotice("Couldn't open that inspection: " + (e.message || e.status));
+  }
+}
+/* Photos load on demand when the form view renders — never embedded
+   in the fleet snapshot or the inspection JSON (URLs/counts only). */
+async function loadInspectionPhotos(full) {
+  const out = {vehicle: null, byDiscrepancy: {}};
+  const veh = (fleet.vehicles || []).find(x => x.id === full.inspection.vehicle_id);
+  if (veh && veh.photo)
+    out.vehicle = await fetchPhoto("/api/vehicles/" + veh.id + "/photo");
+  for (const d of (full.discrepancies || [])) {
+    const urls = [];
+    for (const p of (d.photos || [])) {
+      const src = await fetchPhoto(p.url);
+      if (src) urls.push(src);
+    }
+    out.byDiscrepancy[d.id] = urls;
+  }
+  return out;
+}
+/* Attach controls live OUTSIDE the printable document (a separate div
+   in the form view), so Print / Save-as-PDF never captures buttons
+   or file inputs — only the form + its photos. */
+function renderDiscPhotoTools(full) {
+  const wrap = $("#inspection-photo-tools");
+  const discs = full.discrepancies || [];
+  if (!discs.length) { wrap.innerHTML = ""; return; }
+  wrap.innerHTML = `<div class="card"><h3>Discrepancy photos</h3>
+    <p class="hint">Attach up to 4 photos per discrepancy (any signed-in role).
+    Photos print with the form. Uploads are online-only.</p>
+    ${discs.map(d => {
+      const n = (d.photos || []).length;
+      return `<div class="row" style="margin-bottom:8px">
+        <span style="flex:1">${esc(d.description)} <span style="color:var(--dim)">(${n}/4 photos)</span></span>
+        <input type="file" accept="image/*" capture="environment" data-disc-file="${d.id}" aria-label="Photo for discrepancy ${d.id}">
+        <button class="btn" data-disc-upload="${d.id}" ${n >= 4 ? "disabled" : ""}>Attach photo</button>
+      </div>
+      ${(d.photos || []).map((p, i) => `<div class="row" style="margin-bottom:8px">
+        <span style="flex:1">Photo ${i + 1} <span style="color:var(--dim)">(discrepancy ${d.id})</span></span>
+        <button class="btn danger" data-disc-remove="${p.id}" data-disc-id="${d.id}">Remove photo</button>
+      </div>`).join("")}`;
+    }).join("")}</div>`;
+  $$("[data-disc-upload]").forEach(b => b.addEventListener("click", async () => {
+    const did = b.dataset.discUpload;
+    const input = $(`[data-disc-file="${did}"]`);
+    const file = input && input.files[0];
+    if (!file) { showNotice("Choose a photo first."); return; }
+    if (!navigator.onLine) { showNotice("Discrepancy photos are online-only — connect to attach."); return; }
+    let dataUrl = await downscaleImage(file);
+    if (!dataUrl) {
+      try { dataUrl = await readFileAsDataURL(file); }
+      catch (e) { showNotice("Could not read that photo file."); return; }
+    }
+    // 3 MB client check on both paths, same as vehicle photos
+    if (dataUrl.length > 3145728) { showNotice("That photo is too large (3 MB cap)."); return; }
+    try {
+      await api(`/api/inspections/${full.inspection.id}/discrepancies/${did}/photos`,
+                {method: "POST", body: {image: dataUrl}});
+      showNotice("Discrepancy photo attached.", false);
+      openInspectionForm(full.inspection.id);
+    } catch (e) { showNotice("Photo upload failed: " + (e.message || e.status)); }
+  }));
+  $$("[data-disc-remove]").forEach(b => b.addEventListener("click", async () => {
+    const did = b.dataset.discId, pid = b.dataset.discRemove;
+    if (!navigator.onLine) { showNotice("Discrepancy photos are online-only — connect to remove."); return; }
+    if (!confirm("Remove this photo?")) return;
+    try {
+      await api(`/api/inspections/${full.inspection.id}/discrepancies/${did}/photos/${pid}`,
+                {method: "DELETE"});
+      showNotice("Discrepancy photo removed.", false);
+      openInspectionForm(full.inspection.id);
+    } catch (e) { showNotice("Photo remove failed: " + (e.message || e.status)); }
+  }));
+}
+function printInspectionForm() {
+  if (!currentInspectionFull) return;
+  $("#print-area").innerHTML = inspectionFormHTML(
+    currentInspectionFull,
+    currentInspectionPhotoUrls || {vehicle: null, byDiscrepancy: {}});
+  window.print();
+}
+/* The VCO's notification for inspections: the unreviewed count badge
+   on nav + home. Only the VCO sees it; a failed load hides it rather
+   than showing a stale count. */
+async function loadInspectionBadge() {
+  const badge = $("#inspection-badge");
+  const banner = $("#home-insp-banner");
+  if (!isVCO()) {
+    badge.classList.add("hidden");
+    banner.classList.add("hidden");
+    return;
+  }
+  try {
+    const r = await api("/api/inspections?reviewed=false");
+    const n = (r.inspections || []).length;
+    badge.textContent = n;
+    badge.classList.toggle("hidden", n === 0);
+    banner.innerHTML = n ? `<button class="btn" id="home-insp-go">${n} inspection${n === 1 ? "" : "s"} awaiting review →</button>` : "";
+    banner.classList.toggle("hidden", n === 0);
+    const go = $("#home-insp-go");
+    if (go) go.addEventListener("click", () => {
+      showView("view-inspections"); renderInspections();
+    });
+  } catch (e) {
+    badge.classList.add("hidden");
+    banner.classList.add("hidden");
+  }
 }
 
 /* ============================================================ helpers */
@@ -1074,7 +1642,7 @@ function wire() {
         display_name: $("#su-display").value.trim(),
         password: $("#su-password").value, unit: "18 ASOG"}});
       if (r.token && r.user) {
-        // setup returns a session: the new Admin is signed in directly
+        // setup returns a session: the new VCO is signed in directly
         token = r.token; me = r.user;
         localStorage.setItem("skyline_token", token);
         localStorage.setItem("skyline_user", JSON.stringify(me));
@@ -1083,7 +1651,7 @@ function wire() {
       } else {
         $("#setup-form").classList.add("hidden");
         $("#login-form").classList.remove("hidden");
-        $("#auth-error").textContent = "Admin created — sign in.";
+        $("#auth-error").textContent = "VCO created — sign in.";
       }
     } catch (err) { $("#auth-error").textContent = err.message; }
   });
@@ -1112,7 +1680,8 @@ function wire() {
     const v = b.dataset.nav;
     if (v === "audit") { showView("view-audit"); renderAudit(); }
     if (v === "conflicts") { await loadConflicts(); showView("view-conflicts"); renderConflicts(); }
-    if (v === "admin") { showView("view-admin"); renderAdmin(); }
+    if (v === "vco") { showView("view-vco"); renderVCO(); }
+    if (v === "inspections") { showView("view-inspections"); renderInspections(); }
   }));
   $("#veh-back").addEventListener("click", () => openUnit(currentUnit || "18 ASOG"));
   $("#veh-search").addEventListener("input", renderVehicleList);
@@ -1158,7 +1727,7 @@ function wire() {
         password: $("#uf-password").value,
         unit: $("#uf-unit").value, role: $("#uf-role").value}});
       $("#uf-msg").textContent = "Account created.";
-      e.target.reset(); renderAdmin();
+      e.target.reset(); renderVCO();
     } catch (err) { $("#uf-msg").textContent = err.message; }
   });
   $("#auth-form").addEventListener("submit", async (e) => {
@@ -1171,7 +1740,7 @@ function wire() {
       if (ex) ex.authorized = payload.authorized;
       else fleet.authorizations.push({id: 0, is_demo: 0, ...payload});
     });
-    renderAdmin();
+    renderVCO();
   });
   $("#btn-demo-load").addEventListener("click", async () => {
     try {
@@ -1194,6 +1763,20 @@ function wire() {
     }
   });
   $("#btn-print").addEventListener("click", () => { renderPrint(); window.print(); });
+  $("#insp-filter-unit").addEventListener("change", (e) => {
+    inspFilter.unit = e.target.value; applyInspFilters();
+  });
+  $("#insp-filter-reviewed").addEventListener("change", (e) => {
+    inspFilter.reviewed = e.target.value; applyInspFilters();
+  });
+  $("#btn-insp-print").addEventListener("click", printInspectionForm);
+  $("#insp-form-back").addEventListener("click", () => {
+    showView("view-inspections"); renderInspections();
+  });
+  $("#insp-new-back").addEventListener("click", () => {
+    if (inspVehicle) openVehicle(inspVehicle);
+    else { currentUnit = null; renderTiles(); showView("view-home"); }
+  });
   $("#btn-csv").addEventListener("click", async (e) => {
     e.preventDefault();
     try {
