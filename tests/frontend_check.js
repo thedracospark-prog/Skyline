@@ -282,13 +282,13 @@ const DRIVER = `
          "unit-screen Remove control renders for an editor");
   assert(edHtml.includes('data-auth-save="LMTV"'),
          "unit-screen Save control still renders for an editor");
-  me.role = "viewer";
+  me.role = "operator";
   renderAuthSection();
   const vwHtml = document.querySelector("#unit-auth-list").innerHTML;
   assert(!vwHtml.includes("data-auth-remove"),
-         "no Remove control for a viewer");
+         "no Remove control for an operator");
   assert(!vwHtml.includes("data-auth-save"),
-         "no Save control for a viewer");
+         "no Save control for an operator");
   me.role = "editor";
   // the real endpoint, then the handler's exact local-state step
   // (filter the row out of fleet.authorizations) must drop the totals
@@ -316,6 +316,103 @@ const DRIVER = `
   assert(pill.textContent.includes("Synced") &&
          !pill.textContent.includes("Can't reach"),
          "synced pill (with last-sync time) shows after a successful sync");
+
+  /* ---- v1.2: role gating, 1800 form, photo visibility lock --------- */
+  me.role = "operator";
+  assert(!canEdit() && !isVCO(), "operator cannot edit and is not VCO");
+  me.role = "editor";
+  assert(canEdit() && !isVCO(), "editor can edit but is not VCO");
+  me.role = "vco";
+  assert(canEdit() && isVCO(), "VCO can edit and passes the VCO gate");
+
+  // new-inspection form: exactly the 35 official items
+  renderNewInspection({ id: 1, bumper: "A-1", type: "JLTV",
+    unit: "14 ASOS", mileage: 100 });
+  const niHtml = document.querySelector("#new-inspection-body").innerHTML;
+  assert((niHtml.match(/class="insp-row"/g) || []).length === 35,
+         "new-inspection form renders 35 item rows");
+  assert(niHtml.includes("VCO review queue"),
+         "new-inspection form names the VCO review queue");
+
+  // inspection list: Review button is VCO-only and only when submitted
+  me.role = "vco";
+  renderInspectionsList([
+    { id: 2, bumper: "B-2", unit: "15 ASOS", status: "reviewed",
+      month_year: "October 2026", operator: "Ed Editor",
+      created_at: "2026-10-26T10:00:00+00:00", item_count: 4,
+      fail_count: 1, reviewed_by: "Boss" },
+    { id: 1, bumper: "A-1", unit: "14 ASOS", status: "submitted",
+      month_year: "October 2026", operator: "Vic Operator",
+      created_at: "2026-10-26T09:00:00+00:00", item_count: 4,
+      fail_count: 2 }]);
+  const ilHtml = document.querySelector("#inspection-list").innerHTML;
+  assert(ilHtml.includes('data-insp-review="1"'),
+         "Review button renders for a VCO on a submitted inspection");
+  assert(!ilHtml.includes('data-insp-review="2"'),
+         "no Review button on an already-reviewed inspection");
+  me.role = "operator";
+  renderInspectionsList([
+    { id: 1, bumper: "A-1", unit: "14 ASOS", status: "submitted",
+      month_year: "October 2026", operator: "Vic Operator",
+      created_at: "2026-10-26T09:00:00+00:00", item_count: 4,
+      fail_count: 2 }]);
+  assert(!document.querySelector("#inspection-list").innerHTML
+           .includes("data-insp-review"),
+         "no Review button for an operator");
+
+  // printable form: items/comments/discrepancies + photo thumbs, escaped
+  const full = { inspection: { id: 1, vehicle_id: 7, unit: "14 ASOS",
+      bumper: "A-1", operator: "Vic Operator", month_year: "October 2026",
+      mileage_hours: 5000, tire_front: "80", tire_rear: "80",
+      status: "submitted", created_at: "2026-10-26T09:00:00+00:00",
+      reviewed_by: "", reviewed_at: "" },
+    items: [{ item_no: 1, item_text: INSPECTION_ITEMS[0], applies: true,
+              result: "pass", comment: "" },
+            { item_no: 2, item_text: INSPECTION_ITEMS[1], applies: true,
+              result: "fail", comment: "<script>alert(1)</script> leak" }],
+    discrepancies: [{ id: 9, inspection_id: 1, item_no: 2,
+      description: "oil leak <b>at filter</b>", date_found: "2026-10-26",
+      miles_hours: 5000, status: "open",
+      photos: [{ id: 3, url: "/api/inspections/1/discrepancies/2/photos/3" }] }] };
+  const formHtml = inspectionFormHTML(full,
+    { vehicle: "data:image/jpeg;base64,AAA",
+      byDiscrepancy: { 9: ["data:image/jpeg;base64,BBB"] } });
+  assert(formHtml.includes("AF Form 1800") && formHtml.includes("A-1") &&
+         formHtml.includes("oil leak") &&
+         formHtml.includes("data:image/jpeg;base64,AAA") &&
+         formHtml.includes("data:image/jpeg;base64,BBB"),
+         "printable form renders header, items, discrepancies, both photo thumbs");
+  assert(!formHtml.includes("<script>alert(1)</script>") &&
+         !formHtml.includes("<b>at filter</b>"),
+         "printable form escapes user text");
+
+  // v1.2 fix pass: discrepancy photo tools render a remove control
+  // per existing photo (plus the attach control)
+  renderDiscPhotoTools(full);
+  const toolsHtml = document.querySelector("#inspection-photo-tools").innerHTML;
+  assert(toolsHtml.includes('data-disc-remove="3"') &&
+         toolsHtml.includes('data-disc-id="9"'),
+         "discrepancy photo tools render a remove control per photo");
+  assert(toolsHtml.includes('data-disc-upload="9"'),
+         "discrepancy photo tools keep the attach control");
+
+  // photo visibility lock: list rows + tiles never render <img>, even
+  // when the vehicle carries a photo (detail view only)
+  fleet.vehicles = [{ id: 1, unit: "14 ASOS", bumper: "A-1", type: "JLTV",
+    status: "FMC", mileage: 100, location: "Pool", maint_due_date: "",
+    maint_due_miles: null, notes: "", is_demo: 0, photo: 1,
+    updated_by: "Ed Editor", updated_at: "" }];
+  fleet.authorizations = [];
+  currentUnit = "14 ASOS"; statusFilter = "ALL";
+  document.querySelector("#veh-search").value = "";
+  renderVehicleList();
+  const listHtml = document.querySelector("#vehicle-list").innerHTML;
+  assert(listHtml.includes("A-1") && !listHtml.includes("<img"),
+         "vehicle list row shows the bumper but no photo (detail view only)");
+  const tile = tileHTML({ unit: "14 ASOS", kind: "sq", on_hand: 1,
+    authorizations: 0, mc_rate: 100, fmc: 1, pmc: 0, nmc: 0,
+    includes_demo: false }, "sq");
+  assert(!tile.includes("<img"), "home tile renders no photo");
 
   console.log("FRONTEND CHECKS PASSED");
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -347,12 +444,12 @@ async function waitUp(tries = 60) {
       return [r.status, await r.json().catch(() => ({}))];
     };
     const [, setup] = await j("POST", "/api/setup",
-      { username: "boss", password: "admin-pass-1", display_name: "Boss",
+      { username: "boss", password: "vco-pass-1", display_name: "Boss",
         unit: "18 ASOG" });
-    const admin = setup.token;
+    const vco = setup.token;
     await j("POST", "/api/users",
       { username: "ed", password: "editor-pass-1", display_name: "Ed Editor",
-        unit: "15 ASOS", role: "editor" }, admin);
+        unit: "15 ASOS", role: "editor" }, vco);
     const [, login] = await j("POST", "/api/login",
       { username: "ed", password: "editor-pass-1" });
     // seed a live MC-rate TIE for the F2 parity check: 19 ASOS gets
@@ -361,7 +458,7 @@ async function waitUp(tries = 60) {
     for (let i = 0; i < 16; i++) {
       const [vc] = await j("POST", "/api/vehicles",
         { unit: "19 ASOS", bumper: "TIE-" + i, type: "JLTV",
-          status: i === 0 ? "FMC" : "NMC" }, admin);
+          status: i === 0 ? "FMC" : "NMC" }, vco);
       if (vc !== 201) throw new Error("tie seed failed: HTTP " + vc);
     }
     const user = { id: 2, username: "ed", display_name: "Ed Editor",
