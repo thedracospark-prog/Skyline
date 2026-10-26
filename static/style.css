@@ -212,4 +212,19 @@ select.inline{width:auto;padding:6px 8px}
     font-family:Georgia,serif;padding:24px}
   #print-area table th,#print-area table td{border-bottom:1px solid #999}
   #print-area h1{font-size:20px} #print-area h2{font-size:15px;margin-top:22px}
+  #print-area .st{background:none!important;color:#000!important}
+  #print-area .siglines{margin-top:28px}
 }
+
+/* ---------- 1800 inspections ---------- */
+.insp-row{display:grid;grid-template-columns:2.2em 1fr auto auto;gap:10px;
+  align-items:start;padding:10px 0;border-bottom:1px solid var(--line)}
+.insp-num{color:var(--dim);font-weight:700}
+.insp-text{font-size:.92rem}
+.insp-applies{flex-direction:row;align-items:center;white-space:nowrap}
+.insp-applies input{width:auto}
+.insp-result{display:flex;gap:10px;white-space:nowrap}
+.insp-result label{flex-direction:row;align-items:center}
+.insp-result input{width:auto}
+.insp-comment,.insp-other-comment{grid-column:2 / -1}
+.insp-other-text{grid-column:2}
