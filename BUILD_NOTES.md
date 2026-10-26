@@ -681,3 +681,312 @@ ValidationError escapes its per-row catch), while non-ISO junk dates
 still skip per-row; (2) the sim's CSV lexer now matches Python's csv
 semantics — a quote is special only as the first character of a
 field, literal anywhere else. Both probed live; harness still 29/29.
+
+## v1.2 (2026-10-26) — Role rename (operator/VCO), AF Form 1800 inspections, photos, 30-day retention, sim parity, device guide
+
+### 1. Role rename: viewer → operator, admin → VCO
+- Server: `ROLES = ("operator", "editor", "vco")`. Every role check,
+  error string ("admin only" → "VCO only"), first-run setup (creates
+  the initial VCO), and the last-admin demotion guard (now last-VCO
+  guard) updated. Powers: operator = old viewer powers (read
+  everything) PLUS submitting inspections; editor unchanged; VCO = old
+  admin powers (accounts, demo load/remove) PLUS inspection review.
+- Migration: `init_db` maps legacy stored roles (viewer → operator,
+  admin → vco) for existing databases; no other data touched;
+  historical audit rows keep their old text (verified by a dedicated
+  legacy-migration test that seeds viewer/admin rows + an old audit
+  row, re-runs `init_db`, and asserts the roles moved while the audit
+  detail did not).
+- Frontend: setup screen "Create the first VCO account", nav, VCO
+  screen (`view-vco`), role dropdown options/descriptions, read-only
+  notices for operators; internal identifiers renamed consistently
+  (`isAdmin` → `isVCO`, `view-admin` → `view-vco`).
+- Sim: ROLES, demo logins, role gates, error strings mirrored; a `vco`
+  seed user (Demo VCO, 18 ASOG) was added because the sim's setup is
+  pre-seeded/403, so no other path creates a VCO in the sim.
+- Service-worker shell cache bumped v4 → v5.
+
+### 2. AF Form 1800 operator inspections
+- Tables (created in `init_db`): `inspections` (id, vehicle_id, unit,
+  bumper, operator, month_year, mileage_hours, tire_front, tire_rear,
+  status ∈ {submitted, reviewed}, created_at, reviewed_by,
+  reviewed_at), `inspection_items` (inspection_id, item_no, item_text,
+  applies, result, comment), `discrepancies` (inspection_id, item_no,
+  description, date_found, miles_hours, status ∈ {open, corrected,
+  delayed, disposition}).
+- The 35 items are the official DAF 1800 list, stored server-side as
+  fixed text (client-supplied text for numbered items is ignored, so
+  label drift cannot corrupt records); "other" items: text ≤ 120 chars,
+  max 10; applies bool; result pass/fail required when applies;
+  comment ≤ 2000 chars. All violations → 400.
+- POST /api/inspections (any signed-in role, incl. operator): one
+  `immediate_tx` inserts the inspection + items + an open discrepancy
+  per failed item (description = comment or "Failed — see comment");
+  a supplied mileage_hours updates the vehicle mileage with an audited
+  old→new entry; an "inspection" audit row is written. Vehicle
+  FMC/PMC/NMC status is NEVER changed by an inspection.
+- GET /api/inspections (filters vehicle_id, unit, reviewed; unreviewed
+  first, then id DESC) and GET /api/inspections/{id} (inspection +
+  items + discrepancies) — any signed-in role, no-silos visibility.
+  `do_GET` now passes the query string through to `api_get` (it was
+  previously dropped).
+- POST /api/inspections/{id}/review — VCO only (operator/editor → 403,
+  unknown → 404, already reviewed → 409). Shape validation runs
+  BEFORE the 409 check, matching the server's error precedence.
+  Optional dispositions [{discrepancy_id, status}] apply the real
+  statuses; per-discrepancy audit rows + a review audit row.
+- VCO notification is in-app (no email/SMTP in Skyline, none invented):
+  unreviewed-count badge on nav/home + an Inspections screen listing
+  unreviewed first. That queue IS the notification.
+- FORM VIEW GOES CLIENT-SIDE (spec redirect, 2026-10-26 — supersedes
+  the original server-HTML form plan; no server HTML form page was
+  ever built, so nothing was torn out): `inspectionFormHTML` in
+  app.js fetches the detail JSON and renders the full form (header,
+  item table, discrepancy table, signature lines) with print CSS and
+  a Print / Save-as-PDF button. The server exposes JSON only. Because
+  app.js is byte-identical between the real app and the sim, the sim
+  gets the form view for free.
+- Inspections are ONLINE-ONLY in the real app (same honesty pattern as
+  vehicle deletes and UTC mutations); the UI says so plainly offline
+  and nothing is queued.
+
+### 3. Photos
+- Vehicle photo (fleet data): one per vehicle, any signed-in role may
+  attach/replace/remove. Storage: `vehicles.photo` BLOB + `photo_mime`
+  (added via `_ensure_column` migration). Endpoints: POST
+  /api/vehicles/{id}/photo {image: data URL}, DELETE (any role,
+  idempotent, audits only when a photo actually existed), GET (raw
+  image bytes). Fleet JSON carries only a `photo` 1/0 presence flag —
+  never bytes — via `public_vehicle()` at all four vehicle return
+  sites. Client downscales (canvas) to max 1600 px JPEG 0.8 before
+  upload, falling back to the original file within the cap.
+- Discrepancy photos: table `discrepancy_photos` (id, discrepancy_id,
+  image BLOB, mime, created_at); POST
+  /api/inspections/{id}/discrepancies/{did}/photos (any role, audited;
+  404 on unknown inspection/discrepancy or a discrepancy belonging to
+  another inspection; 409 at 4 photos), GET
+  /api/inspections/{id}/discrepancies/{did}/photos/{pid}. Detail JSON
+  includes photo [{id, url}] per discrepancy, never bytes.
+- Body caps: photo POST endpoints accept up to 3 MB (413 beyond);
+  the global 1 MB cap still applies to everything else. Photo routes
+  are dispatched BEFORE the generic vehicle/inspection routes that
+  would otherwise swallow them (and the DELETE photo branch lives in
+  `api_delete`, not `api_put` — a misplacement during the build was
+  caught and fixed before verification).
+- Printable form renders photos: vehicle photo as a small thumb in
+  the header, discrepancy photos inline in the discrepancy section
+  (thumbnails that print), loaded on demand via the GET endpoints.
+- VISIBILITY (spec clarification, 2026-10-26): the vehicle photo lives
+  ONLY inside the vehicle detail view (and the inspection form reached
+  from it). No thumbnails on home tiles, unit list rows, or search
+  results; the unit list stays text-only. Locked in by frontend_check
+  assertions: list + tile output contains no `<img>` even when
+  vehicles carry `photo: 1`.
+
+### 4. Retention — 30 days for 1800 records only
+- A completed 1800 record (inspection + items + discrepancies +
+  discrepancy photos) is purged 30 days after submission. Purge runs
+  at server startup (`main()`, after `init_db`) and before inspection
+  list reads (`_list_inspections` calls it first).
+- Each purge run writes ONE audit row ("retention purge: N
+  inspection(s) removed"); the original submission/review audit rows
+  REMAIN as the accountability trail. The VCO queue naturally shows
+  only unpurged items.
+- VEHICLE PHOTOS DO NOT EXPIRE: they are fleet data, persist with the
+  vehicle until edited/removed, and are never touched by the purge
+  (verified by test: a vehicle photo survives a purge run).
+- Sim: retention is N/A — in-memory data resets on refresh — and is
+  documented as such; the sim mirrors the photo endpoints with data
+  URLs instead of blobs.
+
+### 5. Sim parity + sim demo divergence (SUPERSEDES the Web sim section)
+- This section supersedes the "Web sim" section's statement that the
+  sim seed is server.py's demo fleet verbatim: **the sim demo is now
+  JLTVs + M1165 HMMWVs ONLY** (spec change, sim scope only;
+  server.py's demo seed is untouched and still carries LMTVs,
+  Trailers, F-250s and Generators). Sim rows were RETYPED, not
+  renumbered — same 18 SAMPLE-xxx bumpers, units, statuses, mileages,
+  due-days and locations, same seeded UTC/conflict references.
+- `docs/sim/sim.js` implements the complete inspection backend
+  in-memory (same validation, same side effects: mileage update on
+  the in-memory vehicle, audit row, discrepancy rows for failed
+  items, VCO-only review with the same 403/404/409 semantics) plus
+  the photo endpoints (vehicle `_photo` data URL field, discrepancy
+  photo data URLs, 4-cap 409). The VCO pending-inspection badge works
+  in the sim from unreviewed in-memory inspections. The browser fetch
+  shim now parses the query string into a plain object and passes it
+  as a 5th arg to `backend.handle` (previously it stripped to
+  `pathname` only, which would have broken `?reviewed=false`); the
+  sim_check 4-arg calls keep working via the default.
+- DEMO_AUTHS rewritten to the new mix: 14 ASOS JLTV 8 + M1165 2 (= 10),
+  15 ASOS JLTV 5 + M1165 3 (= 8), 19 ASOS JLTV 4 + M1165 3 (= 7),
+  20 ASOS JLTV 5 + M1165 3 (= 8), 18 ASOG 0, group 33 — per-unit totals
+  deliberately kept identical to the old mix so downstream totals
+  survive; only the type split changed. Row count changed 15 → 8
+  (2 rows per squadron): every hand-computed expectation in
+  sim_check.js was recomputed from the NEW sim DEMO (seed totals
+  18 / FMC 12 / PMC 3 / NMC 3 / MC 66.7 unchanged; authorization
+  rows 8; the authorization-delete test now targets 14 ASOS
+  "M1165 HMMWV" authorized 2, downstream group 31 / 14 ASOS 8
+  unchanged).
+
+### 6. README device guide (spec addition, 2026-10-26)
+- The README's one-line "open the address in any browser" guidance
+  was replaced with a "Using Skyline on your devices" section: one
+  host runs the server, every other device just opens the address in
+  a browser, no app store; Windows host (Python 3, `python3
+  server.py`, 127.0.0.1:8420 locally, `--host 0.0.0.0` + LAN IP for
+  other devices, Windows Firewall private-network allowance);
+  Windows client (any browser; Edge/Chrome install as an app window);
+  Android (Chrome → Install app / Add to Home Screen; camera capture
+  works for vehicle + discrepancy photos); iOS (Safari ONLY for
+  installing — Share → Add to Home Screen, not offered from Chrome
+  or Firefox; full-screen from the home-screen icon; sign in with the
+  VCO-created account; camera/library picker works; same network as
+  the host or use the public sim preview).
+- Honest limits kept: no push notifications, no background sync;
+  offline stays exactly the snapshot + queued-edits model, with the
+  added caveat that the service-worker shell cache needs localhost or
+  HTTPS — over a plain http://LAN-IP address the browser will not
+  cache the shell, so field devices that will lose signal should keep
+  the tab open or be served over HTTPS.
+- To make the iOS full-screen claim true across iOS versions,
+  index.html gained `mobile-web-app-capable` /
+  `apple-mobile-web-app-capable` / status-bar-style meta tags
+  (manifest already declares display: standalone); the sim re-copy
+  carries them.
+
+### Verification (v1.2)
+- `python3 -m unittest discover -s tests` — **165 tests, OK**
+  (100.2 s; baseline 105 + the new v1.2 classes, each ApiTests
+  subclass also re-running the inherited suite). The run is slow on
+  this VM because every setUp does five PBKDF2-HMAC-SHA256 (200k)
+  hashes — an earlier "stall" scare during this build turned out to
+  be exactly that slowness (faulthandler dump caught a server thread
+  mid-`verify_password`, not a deadlock).
+- `node tests/frontend_check.js` — **61 checks, all passing**
+  (49 baseline + 12 v1.2: role gating ×3, 35-row form ×2, list Review
+  gating ×3, printable-form content/escaping/photos ×2, photo
+  visibility lock ×2).
+- `node tests/sim_check.js` — **35 checks, all passing** (29 baseline
+  + vco login + 3 inspection + 2 photo checks).
+- `node --check` passes on app.js, sw.js, sim.js, and both harnesses.
+- Sim app.js/style.css md5-verified byte-identical to static/
+  (app.js 20d244f55b7e2b93225132a9b7e68238, style.css
+  d965396160dfb9915d20f45d216d0bf5); sim index.html diff vs
+  static/index.html is exactly the three tweaks (title, relative
+  paths, sim.js tag).
+- Live smoke (fresh server, temp DB): setup VCO → create vehicle →
+  submit inspection as operator (failed item + comment) → vehicle
+  mileage updated 100 → 5000 with status untouched (FMC) → audit
+  rows present → VCO queue shows it pending → form-view JSON renders
+  items/comments/discrepancies → vehicle photo attach/get +
+  discrepancy photo attach → VCO review (corrected) → double review
+  409. **10/10 passed.**
+- Legacy-DB probe (pre-seeded viewer/admin users, real server boot):
+  roles migrate to operator/vco, old VCO signs in. **Passed.**
+- Two bugs found and fixed during verification (both in this build's
+  new code, neither pre-existing): (1) `api_get` had no
+  `ValidationError` → 400 mapping (api_post/put/delete already had
+  it), so bad inspection-list filters returned 500 instead of 400 —
+  fixed by adding the except clause; (2) a wrong-argument `req_bytes`
+  call in `test_photo_404s` (missing `"GET"`, so the path string
+  became the method) produced a `RemoteDisconnected` — test-only bug,
+  the server was correct throughout.
+- Non-blocking noise: the suite tail shows `ResourceWarning:
+  unclosed socket` lines from the test servers (same pattern as
+  baseline runs); exit code is 0 regardless.
+
+### Fix pass (v1.2, reviewer-driven)
+Two independent reviewers returned SHIP-AFTER-FIXES with no blocking
+spec deviations. Fixes applied (server + sim mirror where the sim has
+the route):
+- **Anchored routing (B1).** Single-id routes used to match by prefix
+  only, so DELETE /api/vehicles/{id}/photo/extra fell past the photo
+  branch into generic vehicle-delete and DELETED THE VEHICLE
+  (live-reproduced), and PUT to a suffixed path became a vehicle
+  update. All single-id routes in api_get/api_post/api_put/api_delete
+  (and the sim's handle()) now match exact shapes via `_route_id`
+  (server) / `routeIds` (sim); trailing segments 404. Legitimate
+  suffixed routes (vehicle /photo, inspection
+  /discrepancies/{did}/photos/{pid}, utc /vehicles membership,
+  conflicts /resolve) keep working. Regression tests prove the
+  /photo/extra repro now 404s with the vehicle and its photo intact.
+  The GET .../discrepancies/{did}/photos route with no photo id used
+  to fall through to the inspection-detail handler; anchoring makes
+  it 404 (routing nit, fixed as a natural consequence).
+- **int64 guards (B2/F1).** Absurd integer ids (2**70) returned 500
+  (OverflowError on the SQLite bind) on the new endpoints. The
+  codebase's existing int64 range check (as `_path_id` already does)
+  is now applied in `_create_inspection`'s vehicle_id (404),
+  `_attach_discrepancy_photo`'s path ids (404), the
+  `_list_inspections` vehicle_id filter (400), the api_get photo
+  branch ids (404, via the anchored shapes), and review disposition
+  ids (400). Absurd ids return 400/404, never 500.
+- **Last-VCO race (F2).** In `_update_user`, the SELECT COUNT(*)
+  WHERE role='vco' check ran BEFORE immediate_tx, so two concurrent
+  demotions of two different VCOs could both read count=2 and both
+  proceed, leaving ZERO VCOs — with no in-app path back (setup is
+  blocked once users exist; promotion requires a VCO caller). The
+  count check now runs INSIDE the write transaction with a fresh
+  target read, where BEGIN IMMEDIATE serializes writers; the second
+  demoter sees the true count and is refused. A barrier-aligned
+  concurrency test (3 rounds, boss + one other VCO) proves exactly
+  one demotion succeeds per round.
+- **Discrepancy-photo delete (F3).** There was no way to remove a
+  discrepancy photo, so a mistaken photo permanently occupied one of
+  the 4 cap slots until the 30-day purge. Added DELETE
+  /api/inspections/{id}/discrepancies/{did}/photos/{pid} (any
+  signed-in role, audited, 404s matching the GET branch), mirrored
+  in the sim, with a remove control per photo in the form view's
+  discrepancy photo tools. Deletion is allowed on reviewed
+  inspections too: removal takes nothing away from the closed
+  record (contrast the attach rule below).
+- **Photos on reviewed inspections (S3).** Attaching a discrepancy
+  photo to a REVIEWED inspection now returns 409 on server and sim:
+  review closes the record for new content. (Deletion, above, stays
+  allowed.)
+- **Purge on detail read (S1).** Purge triggers were startup + list
+  reads only, so a 31-day-old inspection still returned 200 on a
+  direct detail GET until the next list read. Detail reads now purge
+  first, so expired records 404 there as well.
+- **Retention tests (S2/F4).** Added: purge of a REVIEWED inspection
+  older than 30 days (with its photos; submission + review audit rows
+  remain), the exactly-30-day boundary (cutoff is strict
+  created_at < now-30d, so exactly-30-days-old survives until older
+  — proven with a frozen module clock, since wall-clock comparison
+  is racy), and the startup purge path (the exact
+  purge_expired_inspections call main() makes at boot).
+- **Client 3 MB check (S5).** The client-side 3 MB length check now
+  applies to the downscaled upload path too (vehicle photos; the
+  discrepancy path got the same fix) — previously only the fallback
+  path checked, leaving the server 413 as the only backstop.
+- **Blob URL revocation (S6).** fetchPhoto blob URLs are now revoked
+  when replaced (new photo set loads, new vehicle render) or when
+  the photo view unloads, via revokeBlobUrl/revokePhotoUrls; sim
+  data URLs pass through untouched, and stale vehicle-photo fetches
+  are dropped (sequence guard) instead of assigning to a newer
+  render. Revocation never runs while a photo is on screen.
+- **Sim date parity (S7).** Sim discrepancy date_found used the UTC
+  date (nowIso slice); it now uses the local date (localDatePlus(0))
+  like the server's `_date.today()`.
+
+### Deliberate design rules restated (documented, not changed)
+- **Inspections survive vehicle deletion BY DESIGN.** Deleting a
+  vehicle drops its UTC memberships but NOT its inspections: the
+  inspection rows carry snapshot unit/bumper data, and the audit
+  philosophy is that history outlives the record. An inspection
+  whose vehicle is gone is an orphaned-but-readable record, not an
+  error — the VCO queue and form view still open it.
+- **Inspection mileage may move backward.** A submitted
+  mileage_hours overwrites the vehicle mileage with an audited
+  old→new entry even when lower than current, consistent with the
+  existing vehicle-update behavior; no monotonic guard was
+  specified, and none was added.
+- **Purge cutoff is strict.** Exactly-30-days-old survives until
+  older (created_at < now-30d); see the boundary test above.
+- **No action taken (reviewer items considered and declined):**
+  review-precedence order (deliberate, documented); the pre-existing
+  static-path prefix note (not this build, no such sibling exists);
+  magic-byte mime sniffing (the data-URL whitelist + image/* serving
+  is sufficient).
