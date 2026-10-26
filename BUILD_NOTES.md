@@ -990,3 +990,317 @@ the route):
   static-path prefix note (not this build, no such sibling exists);
   magic-byte mime sniffing (the data-URL whitelist + image/* serving
   is sufficient).
+
+## v1.3 (2026-10-26) — Two roles only (operator/VCO) + Unit VCO badge, no VCO cap
+
+Roles collapse from three to exactly two, enforced server-side on
+every write (the frontend hides/disables controls to match but is
+never relied on alone):
+
+- **ROLES = ("operator", "vco")** in `server.py` and `ROLES` in
+  `docs/sim/sim.js`. Every gate that was `("editor", "vco")` is now
+  `("vco",)` only (13 gates server-side, 13 in the sim): vehicle
+  create/edit/delete, authorization upsert/delete, UTC
+  create/edit/delete/membership, import preview/confirm, conflict
+  resolve. User management (create/demote/remove), demo load/remove
+  and inspection review were already VCO-only and stay so.
+- **Operator:** reads everything (the shared fleet picture, audit,
+  exports) and writes ONLY inspections and photos — 1800 submit,
+  vehicle photo attach/replace/remove, discrepancy photo
+  attach/remove. Everything else is 403, including conflict resolve,
+  UTCs, import and demo data.
+- **VCO:** all rights, including review (operator review is 403).
+  First-run setup still creates the first VCO.
+- **Legacy migration on boot (composes with the v1.2 renames):**
+  `editor -> vco` added alongside `admin -> vco` and
+  `viewer -> operator`. Historical audit rows keep their old text;
+  only stored user roles migrate. A migrated editor who is the
+  earliest-created VCO of their unit becomes that unit's Unit VCO
+  via the backfill below.
+- **Exports stay a read:** `GET /api/export.csv` remains open to both
+  roles — it is the shared fleet picture as a CSV, and the operator
+  denial list is vehicle edits, authorizations, user management and
+  review. (Deliberate call; see the judgment list at the end.)
+- **NEW endpoint (v1.2 had no user removal):** `DELETE /api/users/{id}`,
+  VCO-only, with the last-VCO guard inside the write transaction
+  (400 if the target is the final VCO), session revocation, and an
+  audit row. The VCO screen exposes it as a Remove button. This was
+  needed because the v1.3 spec tests operator-403 on user
+  create/demote/remove — remove previously had no endpoint at all.
+
+### Unit VCO badge (honorific only, one per unit)
+
+- **Flag:** `users.is_main_vco` (INTEGER 0/1; new tables carry it,
+  legacy DBs gain it via `_ensure_column`). Exposed as
+  `is_main_vco` on `public_user` and as `main_vcos: {unit:
+  display_name}` on the fleet snapshot (server + sim), so every role
+  can see it on the unit screen.
+- **Uniqueness enforced in the write path, never just the UI:**
+  `_set_main_vco` (server) / `setMainVco` (sim) clears any other main
+  in the unit before setting the new one, inside the same
+  transaction as the user write.
+- **Default:** the first VCO affiliated with a unit becomes its main
+  VCO automatically on creation (and on promotion to VCO when the
+  unit has no main). The setup VCO is main for its unit.
+- **Transfer:** `PUT /api/users/{id}` with `{"is_main_vco": true}` —
+  VCO-only, audited with field `is_main_vco`, and rejected for a
+  non-VCO target. The VCO screen shows a "★ Make unit VCO" button
+  for non-main VCOs.
+- **Auto-pass:** demoting or removing a main VCO passes the badge to
+  the earliest-created remaining VCO of that unit (lowest id); if
+  none remains it clears. A main VCO moving units passes the badge
+  in the old unit and fills the new unit's seat only if empty.
+- **Honorific only:** no permission check anywhere reads
+  `is_main_vco` — main and non-main VCOs have identical rights
+  (proven by a dedicated test).
+- **Display:** gold star + "Unit VCO" (`.main-vco`, gold on the
+  dark/purple theme) next to the name in the VCO screen's user list,
+  in the header user chip for the signed-in main VCO, and as a
+  "★ Unit VCO" chip on the unit screen. The sim's Demo VCO is main
+  for 18 ASOG.
+- **Boot migration:** for each unit that has VCOs but no main VCO,
+  the earliest-created VCO of that unit becomes main. Backfill runs
+  after the role migration, so a migrated editor can become main.
+  An existing main is never displaced by the backfill.
+- **Sim mirror:** all of the above in `docs/sim/sim.js` (helpers,
+  create/update/delete user, snapshot `main_vcos`, seed). Sim login
+  rule changed with the collapse: `vco` / `operator` are the seeded
+  demo users and any other name now signs in as an **Operator**
+  (least privilege; the old "any other name = Editor" rule is gone).
+
+### No cap on VCOs
+
+There is no ceiling on VCO headcount anywhere — no max-VCO
+validation, no UI limit, no test asserting a cap. The ONLY VCO-count
+guard is the floor: demoting or removing the last VCO fails (400),
+in the transaction, for both demote and remove paths.
+
+### Frontend (static/, mirrored byte-identical into docs/sim/)
+
+- `canEdit()` is now VCO-only; the `editor-only` CSS class is
+  renamed `vco-only` and `utc-editor-tools` is renamed
+  `utc-vco-tools` (the word "editor" is gone from the frontend
+  entirely). Vehicle edit/delete, authorization edit/delete, UTC
+  tools, import and user management are hidden from operators;
+  operators still see the full fleet picture and reach inspection
+  submit + both photo flows.
+- VCO screen: role select offers operator/VCO only; user rows show
+  the ★ Unit VCO badge, a transfer button, and a Remove button.
+
+### Tests
+
+- `python3 -m unittest discover -s tests` — **215 tests, OK**
+  (v1.2: 183). New: 6 matrix tests + 7 badge tests + 1 main-backfill
+  test = 14 new methods; the two new `ApiTests` subclasses also
+  re-run its 9 base tests each (18), matching the existing subclass
+  pattern. Coverage: operator 403 on vehicle create/edit/delete,
+  authorization create/delete, user create/demote/remove,
+  inspection review, UTC create, conflict resolve, demo load/remove;
+  operator 200 on inspection submit + vehicle photo
+  attach/replace/remove + discrepancy photo attach/remove; VCO 200
+  on all of the above; last-VCO demote AND remove both fail; no-cap
+  (4 VCOs in one unit, all 201); badge uniqueness, transfer
+  (VCO-only, audited), auto-pass on removal and on demotion,
+  auto-pass clearing when no VCO remains, badge-never-affects-
+  permissions, legacy editor boots as VCO (+ becomes unit main),
+  backfill keeps an existing main.
+- `node tests/frontend_check.js` — **64 checks, all passing**
+  (v1.2: 63; +2 badge/transfer renders, −1 retired write-role
+  assertion). Bootstrap user is now a VCO (Walt), not an editor.
+- `node tests/sim_check.js` — **43 checks, all passing**
+  (v1.2: 39; + seed main-VCO check, unseeded-name rule, two-role
+  matrix, badge matrix, user-removal floor).
+- `node --check` passes on app.js, sw.js, sim.js, both harnesses.
+- Sim app.js/style.css md5-verified byte-identical to static/
+  (app.js 58cabfbb7053582fccacd968980dd35e, style.css
+  6053921150141728a344a6bf1bafbbf4); sim index.html diff vs
+  static/index.html is exactly the three tweaks (title, relative
+  paths, sim.js tag — 17 diff lines, same shape as v1.2).
+- Live smoke (fresh server, temp DB): setup VCO (main) → operator
+  403s (vehicle/auth/user) → VCO vehicle create → operator
+  inspection submit + vehicle photo + discrepancy photo attach/
+  remove → operator review 403 → VCO review 200 → badge transfer
+  clears first → removal auto-passes → VCO vehicle delete →
+  fleet `main_vcos` shows the setup VCO. **21/21 passed.**
+- Migration probe (legacy DB with a pre-collapse editor + viewer,
+  real boot): editor boots as VCO and becomes its unit's main;
+  viewer boots as operator. **Passed.**
+- One bug found and fixed during verification (this build's new
+  code): `_delete_user` read `fresh.get(...)` on a sqlite3.Row
+  (no `.get`), 500ing user removal — fixed to row indexing before
+  the final run. One test-only bug: an int `photo_id`
+  concatenated into a URL string — fixed with `str()`.
+
+### Deliberate judgment calls (spec ambiguities, conservative where it matters)
+
+- **Export stays open to operators** (read, not write; see above).
+  If the parent wants export VCO-only, it is a one-line gate change
+  in `api_get` + sim `handle()` and two test updates.
+- **User removal is a new endpoint** (see above) — v1.2 had no
+  DELETE /api/users, so the spec's "operator 403 on user remove"
+  could not be tested without one.
+- **Any-VCO transfer, not same-unit-actor transfer:** "any VCO can
+  transfer the badge to another VCO in the same unit" is implemented
+  as: any VCO caller may move the badge between two VCOs of one
+  unit (the badge's unit is what is scoped, not the caller's unit —
+  consistent with Skyline's attribution-only unit affiliation).
+- **Explicit `is_main_vco: false` on a main VCO clears AND
+  auto-passes** (v1.3 fix pass, B1): clearing the seat calls the same
+  auto-pass as removal/demotion, so the earliest-created remaining
+  VCO of the unit inherits; only when no VCO remains does the seat
+  simply clear. The earlier v1.3 wording ("clears without auto-pass,
+  refills on the next create/promote/transfer") was wrong and is
+  superseded by this.
+- **"Editor" as a live role is gone everywhere; the word remains
+  only where history or migration requires it:** the server
+  migration literal `WHERE role='editor'` (required to migrate old
+  DBs), the test legacy-migration data (the allowed exception),
+  BUILD_NOTES dated history sections (v1–v1.2 entries describe the
+  roles as they existed then, as the v1.2 rename did for
+  viewer/admin), and this section's own explanation of what changed.
+  Server gates, frontend, sim, README and all other tests are
+  editor-free as a current designation. README and BUILD_NOTES
+  version notes were otherwise updated; no version string file
+  exists in this repo (version lives in these notes + README roles
+  section), so no separate bump file was changed.
+- **Kept intact, verified by the unchanged suites:** 30-day 1800
+  retention + purge, photo rules (one vehicle photo, detail view
+  only, no thumbnails; 4 discrepancy photos; 3 MB cap;
+  reviewed-attach 409; discrepancy-photo delete on reviewed
+  inspections), offline queued edits + online-only inspections/
+  photos, and all v1.2 fixes (route anchoring, int64 guards,
+  VCO-guard-in-transaction, blob URL revocation, sim local date).
+
+### Fix pass (v1.3, reviewer-driven, 2026-10-26)
+
+Two independent reviewers reported on the v1.3 build; the
+consolidated list below was applied to server.py + the sim mirror
+each (except where noted), with the docs/sim parity re-verified
+after every static change. No behavior was changed for the
+documented-only items (D-A–D-C).
+
+**Blocking**
+- **B1 — Explicit `is_main_vco: false` on a main auto-passes.**
+  `server.py _update_user` and `sim.js updateUser` cleared the seat
+  with no `_pass_main_vco` call, leaving a unit with VCOs but no
+  main. Now an explicit false by a main clears, then auto-passes to
+  the earliest-created remaining VCO of that unit — exactly as the
+  demotion path does. (Only when no VCO remains does the seat
+  simply clear.) Test asserts the earliest-created remaining VCO
+  inherits, server + sim. The v1.3 "refill" sentence above is
+  corrected to match.
+
+**Should-fix (fixed)**
+- **S-A — Sim last-VCO floor test was hollow.** The old sim check
+  never attempted removing the final VCO. A new check on isolated
+  sim state actually DELETEs the seed's sole VCO and expects 400,
+  then confirms the VCO still exists.
+- **S-B — Badge side-effects are now audited.** Transfer used to
+  audit only the target. Now the displaced main (1→0) and the
+  auto-pass recipient (0→1) each get their own `is_main_vco` audit
+  row, inside the same transaction, in `_update_user`,
+  `_delete_user`, `_create_user` (server) and `updateUser`,
+  `deleteUser`, `createUser` (sim).
+- **S-C — Boot backfill deduplicates.** `init_db` used to fill only
+  zero-main units. Now, per unit, the earliest-created main is kept
+  and any additional mains are cleared in the same pass; flags on
+  non-VCOs are cleared too (only a VCO may hold the badge).
+- **S-D — `_create_user` is one write transaction.** Insert + badge
+  + audit now run inside a single `immediate_tx` instead of three
+  separate commits.
+- **S-E — Frontend VCO view guarded.** The `data-nav="vco"` handler
+  now checks `isVCO()` before rendering, and the `#add-form`,
+  `#user-form`, `#auth-form`, `#utc-form` submit handlers early-
+  return on `!canEdit()`. Defense-in-depth only — the server still
+  403s every VCO write. `frontend_check.js` asserts the guards as
+  source text (the wiring section is cut from its child run).
+- **S-F — Test gaps closed.** Server: operator GET `/api/users` →
+  403; operator import preview/confirm and UTC create/update/
+  delete/add-member/remove-member → 403 (added to the denied
+  matrix); PUT `is_main_vco: true` on an operator target → 400;
+  concurrent user removal (barrier-aligned, mirroring the
+  concurrent-demotion test). Sim: operator-403 matrix for review,
+  demo load/remove, conflict resolve, user delete, import preview/
+  confirm, UTC delete, user list.
+- **S-G — `GET /api/users` VCO-only exception documented** in README
+  + here (see below). The endpoint was NOT opened.
+- **S-H — Create-path badge flag consistency.** POST `/api/users`
+  with `role=operator` + `is_main_vco: true` used to 201 with the
+  flag silently dropped; it now 400s, like PUT. (Sim mirrors it.)
+
+**Should-fix (documented, behavior deliberately unchanged)**
+- **D-A — Last-VCO floor stays ORG-GLOBAL.** No per-unit floor was
+  implemented. The floor prevents an org ending up with zero VCOs;
+  a single unit CAN be left with zero VCOs, and any VCO (rights are
+  global) can create a VCO for that unit. Documented in README +
+  here.
+- **D-B — Operator inspection submit updating vehicle mileage
+  stays.** Designed v1.2 1800 flow: mileage/hours updates the vehicle
+  record immediately, audited as "1800 inspection mileage/hours";
+  status is never touched by inspections. This is the one sanctioned
+  operator-write-to-a-vehicle-row exception. Documented in README +
+  here.
+- **D-C — Operator discrepancy-photo DELETE on reviewed inspections
+  stays.** Deliberate v1.2 decision: reviewed-attach → 409,
+  reviewed-delete allowed (removal takes nothing away from the
+  closed record; without it a mistaken photo permanently occupied a
+  cap slot until the 30-day purge). New test covers reviewed-delete
+  behavior. Documented here as inherited v1.2 behavior.
+
+**Nits**
+- **N-A — Helper hardening.** `_set_main_vco` / `setMainVco` now
+  assert the target is a VCO of that unit (all call sites already
+  checked) and `_set_main_vco` returns the displaced main's id for
+  the S-B audit rows.
+- **N-B — Prose.** "notification to the org admin" → "org VCO" in
+  `static/index.html` and `docs/sim/index.html` (identical edit, so
+  the sim index diff stays exactly the three tweaks).
+- **N-C — Sim comment.** `docs/sim/sim.js` seed section notes no
+  boot backfill is needed because the seed is always clean.
+- **N-D — Sim empty-username edge tightened to 400** (was: fallback
+  login created a blank-username Operator); the sim note now also
+  records fallback-login name squatting (a later VCO user-create
+  with that name 409s).
+- **N-E — `_update_user` stale-read audit noise fixed, not just
+  documented.** Field changes are rebuilt from the fresh row read
+  inside the transaction: changes a concurrent writer already
+  applied are dropped as no-ops, and audit old values are re-based
+  on the fresh row; the badge no-op return moved inside the
+  transaction for the same reason. (The pre-transaction fast path
+  for "no change requested at all" remains.)
+
+**Deliberately left unchanged beyond the D-items:** the UTC
+click handlers (`#utc-save`, `#utc-add-confirm`, `#utc-delete`) got
+no `canEdit()` guard — S-E specified the submit handlers + nav
+handler only, and the server 403s those clicks; the create-path
+fill-empty-seat rule (explicit false on create still fills an empty
+seat) is pre-existing v1.3 behavior the fix list did not ask to
+change.
+
+**Verification (fix pass, 2026-10-26):**
+- `python3 -m unittest discover -s tests` — **223 tests, OK**
+  (v1.3: 215; +8: explicit-false auto-pass, lone-main clear,
+  create-flag 400, create-displaced audit, PUT-flag-on-operator
+  400, concurrent removal, backfill dedup, reviewed-delete).
+- `node tests/sim_check.js` — **47 checks, all passing** (v1.3: 43;
+  +4: sim explicit-false auto-pass, sim create-flag 400, isolated
+  last-VCO floor, sim operator-403 matrix).
+- `node tests/frontend_check.js` — **64 checks, all passing**
+  (count unchanged; the new S-E guard assertions run parent-side
+  and fail the run if a guard is missing).
+- `node --check` passes on app.js, sw.js, sim.js, both harnesses.
+- Sim app.js/style.css md5-verified byte-identical to static/
+  (app.js c980142604c15701bae86698e837cfe0, style.css unchanged
+  6053921150141728a344a6bf1bafbbf4); sim index.html diff vs
+  static/index.html is exactly the three tweaks (17 diff lines,
+  same shape as v1.2/v1.3).
+- Live smoke (fresh server, temp DB, never the tree DB): setup VCO
+  (main) → operator 403s (users GET/create, import preview, UTC
+  create) → transfer → B1 explicit-false auto-pass → removal
+  auto-pass → last-VCO demote/remove both 400, org left with
+  exactly one VCO. **13/13 passed.**
+- Migration probe (legacy DB with a pre-collapse editor + viewer +
+  a duplicated-main unit, real boot): editor boots as VCO and
+  becomes its unit's main; viewer boots as operator; earliest
+  duplicate main kept, additional main cleared, non-VCO flag
+  cleared. **6/6 passed.**
