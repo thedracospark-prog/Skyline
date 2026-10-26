@@ -4,7 +4,7 @@
    Strategy (v2): network-first for navigations and app files so a new
    deployed version is picked up on the next load, with the cache as
    the offline fallback. */
-const CACHE = "skyline-shell-v4";
+const CACHE = "skyline-shell-v5";
 const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/manifest.json",
   "/icons/icon-192.png", "/icons/icon-512.png", "/icons/apple-touch-icon.png",
   "/icons/favicon-32.png"];
