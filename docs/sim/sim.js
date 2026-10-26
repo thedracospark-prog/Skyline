@@ -34,7 +34,46 @@ const UNITS = [
 ];
 const UNIT_NAMES = UNITS.map(u => u[0]);
 const STATUSES = ["FMC", "PMC", "NMC"];
-const ROLES = ["viewer", "editor", "admin"];
+const ROLES = ["operator", "editor", "vco"];
+/* DAF Form 1800 — the official 35 checklist items, verbatim (mirrors
+   server.py's INSPECTION_ITEMS). */
+const INSPECTION_ITEMS = [
+  "Cleanliness/damage/missing items (interior/exterior); unusual noise or occurrence (during operation)",
+  "Leaks/fluid levels (oil/coolant/hydraulic/transmission/brake fluid)",
+  "Safety devices (wiring/lights/horn/warning devices/sirens/reflectors/mirrors/seatbelts)",
+  "Batteries (fluid/damage/cleanliness/security); instruments/gauges (operation & readings)",
+  "Drive belts (fraying/cracking/tension); pulley/motor (air/hydraulic/electrical)",
+  "Steering/springs/shackles (free play/excessive wear)",
+  "Exhaust system/spark arrestors (damage/leaks)",
+  "Tires/wheels (lug nuts/cracks); tracks",
+  "Heater/defroster/air-conditioner; auxiliary generators/auxiliary heaters",
+  "Brakes (servicing/parking); clutches (operation); accelerator pedal (damage/worn)",
+  "Windshield (wipers/washer fluid/cracks)",
+  "Hydraulic hoses (damage/frayed); cylinders/valves (damage/leaks)",
+  "Cold weather aids (ether/alcohol injector, battery heater, oil/engine heater, coolant heater, etc.)",
+  "Power take-off (PTO)",
+  "Winch/tow connections",
+  "Air tanks (drain daily or after operation)",
+  "Mast tines/rollerized tines",
+  "Rollers/power conveyors/rails/ladders/catwalks/cargo bed",
+  "Bed (K-load): top/half/lowest/roll/shift/yaw (check position)",
+  "Lower lobe cab shift (operation)",
+  "Emergency stand-by system",
+  'Markings — check legibility ("WATCHSTEP" stencil, etc.)',
+  "Chutes/augers/fan blades/wear shoes",
+  "Drums/crowns/fair leads",
+  "Booms/outriggers/basket/platform/turntable (check for cracks & damage)",
+  "Brooms/sprockets/chains",
+  "Blades/reels/sickle bars/flails",
+  "Kettle/hoisting mechanism/agitators",
+  "Sheaves/blocks/cables",
+  "Mould boards/bowls/cutting edges/skids",
+  "Pumps/piping/discharge valves (leaks, corrosion); spare bars",
+  "Firefighting specialized equipment/safety devices",
+  "Firefighting system operation & foam/water levels",
+  "Auxiliary firefighting system",
+  "Hose/reels/handlines/turrets",
+];
 const VEHICLE_FIELDS = ["unit", "bumper", "type", "status", "mileage",
   "maint_due_date", "maint_due_miles", "location", "notes"];
 const UTC_CODE_MAX = 20;
@@ -61,37 +100,43 @@ const HEADER_ALIASES = {
   "notes": "notes", "note": "notes", "remarks": "notes",
 };
 
-/* Demo fleet — copied 1:1 from server.py's DEMO / DEMO_AUTHS.
-   due-in-days is relative to "today", exactly like the server's
-   loader (date.today() + timedelta(days=due_days)). */
+/* Demo fleet — SIM ONLY: JLTVs and M1165 HMMWVs, nothing else.
+   This intentionally differs from server.py's DEMO / DEMO_AUTHS (the
+   real server's demo seed is unchanged and still carries LMTVs,
+   Trailers, F-250s and Generators). Rows are RETYPED, not renumbered:
+   same bumper numbers, same unit spread, same statuses, same order —
+   so the seeded UTCs (which reference demo bumpers) and every
+   hand-computed seed expectation keep resolving. due-in-days is
+   relative to "today", exactly like the server's loader
+   (date.today() + timedelta(days=due_days)). */
 const DEMO = [
   ["14 ASOS", "SAMPLE-101", "JLTV", "FMC", 12400, 90, "Motor Pool A"],
   ["14 ASOS", "SAMPLE-102", "JLTV", "PMC", 23100, 12, "Motor Pool A"],
-  ["14 ASOS", "SAMPLE-103", "HMMWV", "FMC", 45200, 60, "Motor Pool A"],
-  ["14 ASOS", "SAMPLE-104", "HMMWV", "NMC", 51800, -5, "Maintenance Bay"],
-  ["14 ASOS", "SAMPLE-105", "LMTV", "FMC", 18900, 45, "Motor Pool B"],
-  ["14 ASOS", "SAMPLE-106", "Trailer", "FMC", 0, 120, "Motor Pool B"],
+  ["14 ASOS", "SAMPLE-103", "M1165 HMMWV", "FMC", 45200, 60, "Motor Pool A"],
+  ["14 ASOS", "SAMPLE-104", "M1165 HMMWV", "NMC", 51800, -5, "Maintenance Bay"],
+  ["14 ASOS", "SAMPLE-105", "JLTV", "FMC", 18900, 45, "Motor Pool B"],
+  ["14 ASOS", "SAMPLE-106", "M1165 HMMWV", "FMC", 0, 120, "Motor Pool B"],
   ["15 ASOS", "SAMPLE-201", "JLTV", "FMC", 9800, 75, "Motor Pool A"],
-  ["15 ASOS", "SAMPLE-202", "HMMWV", "FMC", 33400, 20, "Motor Pool A"],
-  ["15 ASOS", "SAMPLE-203", "F-250 Truck", "PMC", 61200, 8, "Motor Pool A"],
-  ["15 ASOS", "SAMPLE-204", "Generator", "NMC", 1450, -2, "Maintenance Bay"],
+  ["15 ASOS", "SAMPLE-202", "M1165 HMMWV", "FMC", 33400, 20, "Motor Pool A"],
+  ["15 ASOS", "SAMPLE-203", "JLTV", "PMC", 61200, 8, "Motor Pool A"],
+  ["15 ASOS", "SAMPLE-204", "M1165 HMMWV", "NMC", 1450, -2, "Maintenance Bay"],
   ["19 ASOS", "SAMPLE-301", "JLTV", "FMC", 15200, 110, "Motor Pool A"],
   ["19 ASOS", "SAMPLE-302", "JLTV", "FMC", 16750, 55, "Motor Pool A"],
-  ["19 ASOS", "SAMPLE-303", "LMTV", "PMC", 27400, 15, "Motor Pool B"],
-  ["19 ASOS", "SAMPLE-304", "HMMWV", "FMC", 29800, 80, "Motor Pool B"],
-  ["20 ASOS", "SAMPLE-401", "HMMWV", "FMC", 40100, 33, "Motor Pool A"],
+  ["19 ASOS", "SAMPLE-303", "M1165 HMMWV", "PMC", 27400, 15, "Motor Pool B"],
+  ["19 ASOS", "SAMPLE-304", "M1165 HMMWV", "FMC", 29800, 80, "Motor Pool B"],
+  ["20 ASOS", "SAMPLE-401", "M1165 HMMWV", "FMC", 40100, 33, "Motor Pool A"],
   ["20 ASOS", "SAMPLE-402", "JLTV", "NMC", 19300, -9, "Maintenance Bay"],
-  ["20 ASOS", "SAMPLE-403", "Trailer", "FMC", 0, 150, "Motor Pool A"],
-  ["20 ASOS", "SAMPLE-404", "F-250 Truck", "FMC", 55700, 64, "Motor Pool A"],
+  ["20 ASOS", "SAMPLE-403", "M1165 HMMWV", "FMC", 0, 150, "Motor Pool A"],
+  ["20 ASOS", "SAMPLE-404", "JLTV", "FMC", 55700, 64, "Motor Pool A"],
 ];
+/* Per-unit authorization totals match the old mix (14:10, 15:8, 19:7,
+   20:8, ASOG:0, group 33) — only the type split changed, so the
+   auth-vs-on-hand viz stays in the same shape it had. */
 const DEMO_AUTHS = [
-  ["14 ASOS", "JLTV", 3], ["14 ASOS", "HMMWV", 3], ["14 ASOS", "LMTV", 2],
-  ["14 ASOS", "Trailer", 2],
-  ["15 ASOS", "JLTV", 2], ["15 ASOS", "HMMWV", 2],
-  ["15 ASOS", "F-250 Truck", 2], ["15 ASOS", "Generator", 2],
-  ["19 ASOS", "JLTV", 3], ["19 ASOS", "LMTV", 2], ["19 ASOS", "HMMWV", 2],
-  ["20 ASOS", "HMMWV", 3], ["20 ASOS", "JLTV", 2], ["20 ASOS", "Trailer", 1],
-  ["20 ASOS", "F-250 Truck", 2],
+  ["14 ASOS", "JLTV", 8], ["14 ASOS", "M1165 HMMWV", 2],
+  ["15 ASOS", "JLTV", 5], ["15 ASOS", "M1165 HMMWV", 3],
+  ["19 ASOS", "JLTV", 4], ["19 ASOS", "M1165 HMMWV", 3],
+  ["20 ASOS", "JLTV", 5], ["20 ASOS", "M1165 HMMWV", 3],
 ];
 /* Two pre-built SAMPLE UTCs so UTC health shows the moment a visitor
    opens a unit (bumpers refer to the demo fleet above). */
@@ -353,13 +398,21 @@ function createSimBackend() {
     utcVehicles: new Set(), // "utcId:vehicleId"
     auditLog: [],
     conflicts: [],
+    inspections: [], inspItems: [], discrepancies: [], discPhotos: [],
     nextUserId: 1, nextVehicleId: 1, nextAuthId: 1,
     nextUtcId: 1, nextAuditId: 1, nextConflictId: 1,
+    nextInspId: 1, nextDiscId: 1, nextDiscPhotoId: 1,
     tokenSeq: 0,
   };
 
   const publicUser = (u) => ({id: u.id, username: u.username,
     display_name: u.display_name, unit: u.unit, role: u.role});
+  /* Vehicle dict safe for JSON: the in-memory photo data URL (_photo)
+     never leaves the backend — only a presence flag, like the server. */
+  const publicVehicle = (v) => {
+    const {_photo, ...rest} = v;
+    return {...rest, photo: _photo ? 1 : 0};
+  };
   const findUser = (username) =>
     state.users.find(u => u.username === username) || null;
   const userById = (id) => state.users.find(u => u.id === id) || null;
@@ -427,8 +480,11 @@ function createSimBackend() {
     {id: state.nextUserId++, username: "editor",
      display_name: "Demo Editor", unit: "18 ASOG", role: "editor",
      _pw: null},
-    {id: state.nextUserId++, username: "viewer",
-     display_name: "Demo Viewer", unit: "14 ASOS", role: "viewer",
+    {id: state.nextUserId++, username: "operator",
+     display_name: "Demo Operator", unit: "14 ASOS", role: "operator",
+     _pw: null},
+    {id: state.nextUserId++, username: "vco",
+     display_name: "Demo VCO", unit: "18 ASOG", role: "vco",
      _pw: null});
   loadDemo("Skyline Sim");
   for (const s of SEED_UTCS) {
@@ -466,7 +522,7 @@ function createSimBackend() {
       a.vehicle_type < b.vehicle_type ? -1 :
       a.vehicle_type > b.vehicle_type ? 1 : 0;
     const vehicles = [...state.vehicles].sort(byUnitBumper)
-      .map(v => ({...v}));
+      .map(v => publicVehicle(v));
     const auths = [...state.authorizations].sort(byUnitType)
       .map(a => ({...a}));
     const units = [];
@@ -517,6 +573,27 @@ function createSimBackend() {
     if (!Number.isSafeInteger(value)) return null;
     return value;
   }
+  /* Anchored route match (server.py _route_id mirror): shape segments
+     with "?" marking an integer id slot. Returns the parsed ids, or
+     null when the path does not match EXACTLY — prefix-only matching
+     used to let trailing segments fall through to the wrong handler
+     (DELETE /api/vehicles/{id}/photo/extra deleted the vehicle). */
+  function routeIds(path, ...shape) {
+    const parts = path.replace(/^\/|\/$/g, "").split("/");
+    if (parts.length !== shape.length) return null;
+    const ids = [];
+    for (let i = 0; i < shape.length; i++) {
+      if (shape[i] === "?") {
+        if (!/^-?\d+$/.test(parts[i])) return null;
+        const value = Number(parts[i]);
+        if (!Number.isSafeInteger(value)) return null;
+        ids.push(value);
+      } else if (parts[i] !== shape[i]) {
+        return null;
+      }
+    }
+    return ids;
+  }
 
   /* ======================================================== handlers */
   function setup(data) {
@@ -542,7 +619,7 @@ function createSimBackend() {
       if (user._pw !== null && user._pw !== password)
         throw new SimError(401, "bad username or password");
     } else {
-      // predictable demo rule: "viewer" is the Viewer (seeded above);
+      // predictable demo rule: "operator" is the Operator (seeded above);
       // any other new name signs in as an Editor demo user
       user = {id: state.nextUserId++, username,
               display_name: username || "Demo Editor",
@@ -559,7 +636,7 @@ function createSimBackend() {
     const password = data.password || "";
     const display = String(data.display_name || username).trim();
     const unit = data.unit === undefined ? "" : data.unit;
-    const role = data.role === undefined ? "viewer" : data.role;
+    const role = data.role === undefined ? "operator" : data.role;
     if (!username || String(password).length < 8)
       throw bad("username required; password must be at least 8 characters");
     if (!ROLES.includes(role)) throw bad("invalid role");
@@ -583,9 +660,9 @@ function createSimBackend() {
     if ("role" in data) {
       if (!ROLES.includes(data.role)) throw bad("invalid role");
       if (data.role !== target.role) {
-        if (target.role === "admin" &&
-            state.users.filter(u => u.role === "admin").length <= 1)
-          throw bad("cannot demote the last Admin");
+        if (target.role === "vco" &&
+            state.users.filter(u => u.role === "vco").length <= 1)
+          throw bad("cannot demote the last VCO");
         updates.role = [target.role, data.role];
       }
     }
@@ -627,7 +704,7 @@ function createSimBackend() {
     if (opId) {
       const existing = state.vehicles.find(v => v.client_op === opId);
       if (existing)
-        return {status: 200, body: {vehicle: {...existing},
+        return {status: 200, body: {vehicle: publicVehicle(existing),
                                     deduplicated: true}};
     }
     if (bumperTaken(clean.unit, clean.bumper))
@@ -647,7 +724,7 @@ function createSimBackend() {
     state.vehicles.push(v);
     audit(v.id, user.display_name, "create", "", "", "",
           clean.unit + " " + clean.bumper + " (" + clean.type + ")");
-    return {status: 201, body: {vehicle: {...v}}};
+    return {status: 201, body: {vehicle: publicVehicle(v)}};
   }
   function updateVehicle(path, data, user) {
     const vid = pathId(path, "/api/vehicles/");
@@ -719,7 +796,7 @@ function createSimBackend() {
       row.updated_by = user.display_name;
       row.updated_at = nowIso();
     }
-    const out = {vehicle: {...row}};
+    const out = {vehicle: publicVehicle(row)};
     if (conflict) out.conflict = conflict;
     return {status: 200, body: out};
   }
@@ -1099,10 +1176,326 @@ function createSimBackend() {
                       'attachment; filename="skyline_fleet.csv"'}};
   }
 
+  /* ======================================================== inspections
+     Full in-memory mirror of server.py's 1800 endpoints (same
+     validation, same side effects: mileage update, audit rows,
+     discrepancy rows for failed items, VCO-only review with the same
+     403/404/409 semantics). Retention is N/A here: sim state resets
+     on refresh, so nothing ever ages to 30 days. */
+  function validateInspectionItems(items) {
+    if (!Array.isArray(items) || !items.length)
+      throw bad("items must be a non-empty list");
+    if (items.length > 45)
+      throw bad("too many items (35 numbered + 10 other max)");
+    const seen = new Set();
+    let others = 0;
+    const clean = [];
+    for (const entry of items) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry))
+        throw bad("each item must be an object");
+      let itemNo = entry.item_no;
+      let text;
+      if (typeof itemNo === "boolean")
+        throw bad('item_no must be 1-35 or "other"');
+      if (typeof itemNo === "number") {
+        if (!Number.isInteger(itemNo) || itemNo < 1 || itemNo > 35)
+          throw bad('item_no must be 1-35 or "other"');
+        if (seen.has(itemNo)) throw bad("duplicate item " + itemNo);
+        seen.add(itemNo);
+        text = INSPECTION_ITEMS[itemNo - 1];
+      } else if (itemNo === "other") {
+        if (++others > 10) throw bad("at most 10 other items");
+        text = typeof entry.text === "string" ? entry.text.trim() : "";
+        if (!text) throw bad("other items need text");
+        if (text.length > 120)
+          throw bad("other item text must be <= 120 chars");
+        itemNo = null;
+      } else {
+        throw bad('item_no must be 1-35 or "other"');
+      }
+      const applies = entry.applies === undefined ? true : entry.applies;
+      if (typeof applies !== "boolean")
+        throw bad("applies must be true or false");
+      let result = null;
+      if (applies) {
+        if (entry.result !== "pass" && entry.result !== "fail")
+          throw bad("result must be pass or fail when the item applies");
+        result = entry.result;
+      }
+      let comment = entry.comment === null || entry.comment === undefined
+        ? "" : entry.comment;
+      if (typeof comment !== "string") throw bad("comment must be text");
+      if (comment.length > 2000)
+        throw bad("comment must be <= 2000 chars");
+      clean.push({item_no: itemNo, item_text: text, applies,
+                  result, comment: comment.trim()});
+    }
+    return clean;
+  }
+  function parsePhotoDataUrl(data) {
+    if (!data || typeof data !== "object")
+      throw bad("photo body must be an object");
+    const url = data.image;
+    if (typeof url !== "string" || !url.startsWith("data:image/"))
+      throw bad("image must be a data URL (data:image/...)");
+    const comma = url.indexOf(",");
+    if (comma < 0) throw bad("image data URL is malformed");
+    const header = url.slice(0, comma);
+    const mime = header.slice(5).split(";", 1)[0];
+    if (!["image/jpeg", "image/png", "image/webp", "image/gif"]
+          .includes(mime) || !header.includes(";base64"))
+      throw bad("image must be a base64 JPEG, PNG, WebP or GIF");
+    const b64 = url.slice(comma + 1);
+    if (!b64) throw bad("image is empty");
+    if (url.length > 3 * 1024 * 1024)
+      throw new SimError(413, "request body too large (3 MB cap)");
+    try { atob(b64); }
+    catch (e) { throw bad("image data is not valid base64"); }
+    return {dataUrl: url, mime};
+  }
+  function inspectionFull(iid) {
+    const insp = state.inspections.find(x => x.id === iid);
+    if (!insp) return null;
+    const items = state.inspItems.filter(x => x.inspection_id === iid)
+      .map(x => ({item_no: x.item_no, item_text: x.item_text,
+                  applies: x.applies, result: x.result,
+                  comment: x.comment}));
+    const discs = state.discrepancies.filter(x => x.inspection_id === iid)
+      .map(d => ({...d, photos: state.discPhotos
+        .filter(p => p.discrepancy_id === d.id)
+        .map(p => ({id: p.id,
+          url: "/api/inspections/" + iid + "/discrepancies/" + d.id +
+               "/photos/" + p.id}))}));
+    return {inspection: {...insp}, items, discrepancies: discs};
+  }
+  function createInspection(body, user) {
+    let vehicleId = body.vehicle_id;
+    if (typeof vehicleId === "string" && INT_RE.test(vehicleId.trim()))
+      vehicleId = parseInt(vehicleId.trim(), 10);
+    if (typeof vehicleId !== "number" || !Number.isInteger(vehicleId))
+      throw bad("vehicle_id must be an integer");
+    const monthYear = typeof body.month_year === "string"
+      ? body.month_year.trim() : "";
+    if (!monthYear) throw bad("month_year is required");
+    if (monthYear.length > 40) throw bad("month_year must be <= 40 chars");
+    const mileage = strictNonnegInt(body.mileage_hours, "mileage_hours");
+    const tires = {};
+    for (const f of ["tire_front", "tire_rear"]) {
+      const v = body[f];
+      if (v === null || v === undefined) tires[f] = "";
+      else if (typeof v !== "string") throw bad(f + " must be text");
+      else if (v.trim().length > 40) throw bad(f + " must be <= 40 chars");
+      else tires[f] = v.trim();
+    }
+    const items = validateInspectionItems(body.items);
+    const veh = state.vehicles.find(v => v.id === vehicleId);
+    if (!veh) throw new SimError(404, "vehicle not found");
+    const insp = {id: state.nextInspId++, vehicle_id: vehicleId,
+      unit: veh.unit, bumper: veh.bumper, operator: user.display_name,
+      month_year: monthYear, mileage_hours: mileage,
+      tire_front: tires.tire_front, tire_rear: tires.tire_rear,
+      status: "submitted", created_at: nowIso(),
+      reviewed_by: "", reviewed_at: ""};
+    state.inspections.push(insp);
+    let failed = 0;
+    for (const it of items) {
+      state.inspItems.push({inspection_id: insp.id, ...it});
+      if (it.applies && it.result === "fail") {
+        failed++;
+        state.discrepancies.push({id: state.nextDiscId++,
+          inspection_id: insp.id, item_no: it.item_no,
+          description: it.comment || "Failed — see comment",
+          date_found: localDatePlus(0), miles_hours: mileage,
+          status: "open"});
+      }
+    }
+    if (mileage !== null) {
+      const old = veh.mileage;
+      veh.mileage = mileage;
+      veh.updated_by = user.display_name;
+      veh.updated_at = nowIso();
+      audit(vehicleId, user.display_name, "update", "mileage", old, mileage,
+            "1800 inspection mileage/hours");
+    }
+    audit(vehicleId, user.display_name, "inspection", "", "", "",
+          "1800 inspection submitted (" + monthYear + ") — " +
+          items.length + " items, " + failed + " " +
+          (failed === 1 ? "discrepancy" : "discrepancies"));
+    return {status: 201, body: inspectionFull(insp.id)};
+  }
+  function listInspections(query) {
+    let rows = [...state.inspections];
+    if (query.vehicle_id !== undefined) {
+      if (!INT_RE.test(String(query.vehicle_id)))
+        throw bad("vehicle_id must be an integer");
+      rows = rows.filter(r => r.vehicle_id === parseInt(query.vehicle_id, 10));
+    }
+    if (query.unit !== undefined) {
+      if (!UNIT_NAMES.includes(query.unit))
+        throw bad("unit must be one of the five units");
+      rows = rows.filter(r => r.unit === query.unit);
+    }
+    if (query.reviewed !== undefined) {
+      if (query.reviewed === "true")
+        rows = rows.filter(r => r.status === "reviewed");
+      else if (query.reviewed === "false")
+        rows = rows.filter(r => r.status === "submitted");
+      else throw bad("reviewed must be true or false");
+    }
+    rows.sort((a, b) =>
+      ((a.status === "submitted" ? 0 : 1) - (b.status === "submitted" ? 0 : 1)) ||
+      (b.id - a.id));
+    const withCounts = rows.map(r => ({...r,
+      item_count: state.inspItems.filter(x => x.inspection_id === r.id).length,
+      fail_count: state.discrepancies.filter(x => x.inspection_id === r.id).length}));
+    return {status: 200, body: {inspections: withCounts}};
+  }
+  function reviewInspection(path, body, user) {
+    const iid = pathId(path, "/api/inspections/");
+    if (iid === null) throw new SimError(404, "inspection not found");
+    // shape validation first (server: 400 beats 409 for bad shapes)
+    let dispositions = body.dispositions === null ||
+      body.dispositions === undefined ? [] : body.dispositions;
+    if (!Array.isArray(dispositions))
+      throw bad("dispositions must be a list");
+    const clean = [];
+    const seen = new Set();
+    for (const d of dispositions) {
+      if (!d || typeof d !== "object")
+        throw bad("each disposition must be an object");
+      if (typeof d.discrepancy_id !== "number" ||
+          !Number.isInteger(d.discrepancy_id))
+        throw bad("discrepancy_id must be an integer");
+      if (seen.has(d.discrepancy_id))
+        throw bad("duplicate discrepancy in dispositions");
+      seen.add(d.discrepancy_id);
+      if (!["corrected", "delayed", "disposition"].includes(d.status))
+        throw bad("disposition status must be corrected, delayed or "
+                  + "disposition");
+      clean.push(d);
+    }
+    const insp = state.inspections.find(x => x.id === iid);
+    if (!insp) throw new SimError(404, "inspection not found");
+    if (insp.status === "reviewed")
+      throw new SimError(409, "inspection already reviewed");
+    for (const d of clean) {
+      const disc = state.discrepancies.find(x => x.id === d.discrepancy_id &&
+                                                 x.inspection_id === iid);
+      if (!disc)
+        throw bad("discrepancy " + d.discrepancy_id +
+                  " does not belong to this inspection");
+      if (disc.status !== d.status) {
+        const old = disc.status;
+        disc.status = d.status;
+        audit(insp.vehicle_id, user.display_name, "inspection-review",
+              "discrepancy", old, d.status,
+              "discrepancy " + d.discrepancy_id);
+      }
+    }
+    insp.status = "reviewed";
+    insp.reviewed_by = user.display_name;
+    insp.reviewed_at = nowIso();
+    audit(insp.vehicle_id, user.display_name, "inspection-review", "", "", "",
+          "1800 inspection reviewed (" + insp.month_year + ")");
+    return {status: 200, body: {inspection: {...insp}}};
+  }
+  function attachVehiclePhoto(path, body, user) {
+    const vid = pathId(path, "/api/vehicles/");
+    if (vid === null) throw new SimError(404, "vehicle not found");
+    const veh = state.vehicles.find(v => v.id === vid);
+    if (!veh) throw new SimError(404, "vehicle not found");
+    const {dataUrl} = parsePhotoDataUrl(body);
+    const had = !!veh._photo;
+    veh._photo = dataUrl;
+    veh.updated_by = user.display_name;
+    veh.updated_at = nowIso();
+    audit(vid, user.display_name, "photo", "photo",
+          had ? "present" : "", "present",
+          had ? "vehicle photo replaced" : "vehicle photo attached");
+    return {status: 200, body: {ok: true, photo: true}};
+  }
+  function removeVehiclePhoto(path, user) {
+    const vid = pathId(path, "/api/vehicles/");
+    if (vid === null) throw new SimError(404, "vehicle not found");
+    const veh = state.vehicles.find(v => v.id === vid);
+    if (!veh) throw new SimError(404, "vehicle not found");
+    if (veh._photo) {
+      delete veh._photo;
+      veh.updated_by = user.display_name;
+      veh.updated_at = nowIso();
+      audit(vid, user.display_name, "photo", "photo", "present", "",
+            "vehicle photo removed");
+    }
+    return {status: 200, body: {ok: true, photo: false}};
+  }
+  function getVehiclePhoto(path) {
+    const vid = pathId(path, "/api/vehicles/");
+    const veh = vid === null ? null
+      : state.vehicles.find(v => v.id === vid);
+    if (!veh || !veh._photo)
+      throw new SimError(404, "vehicle photo not found");
+    return {status: 200, body: veh._photo, ctype: "text/plain"};
+  }
+  function attachDiscPhoto(path, body, user) {
+    const parts = path.replace(/^\/|\/$/g, "").split("/");
+    const iid = Number(parts[2]), did = Number(parts[4]);
+    if (!Number.isInteger(iid) || !Number.isInteger(did))
+      throw new SimError(404, "photo not found");
+    const {dataUrl} = parsePhotoDataUrl(body);
+    const insp = state.inspections.find(x => x.id === iid);
+    if (!insp) throw new SimError(404, "inspection not found");
+    // review closes the record (v1.2 fix pass): no new photos
+    // on a reviewed inspection
+    if (insp.status === "reviewed")
+      throw new SimError(409, "inspection already reviewed");
+    const disc = state.discrepancies.find(x => x.id === did &&
+                                               x.inspection_id === iid);
+    if (!disc) throw new SimError(404, "discrepancy not found");
+    if (state.discPhotos.filter(p => p.discrepancy_id === did).length >= 4)
+      throw new SimError(409, "discrepancy already has 4 photos");
+    const photo = {id: state.nextDiscPhotoId++, discrepancy_id: did, dataUrl};
+    state.discPhotos.push(photo);
+    audit(insp.vehicle_id, user.display_name, "inspection-photo", "", "", "",
+          "photo added to discrepancy " + did + " (inspection " + iid + ")");
+    return {status: 201, body: {photo_id: photo.id,
+      url: "/api/inspections/" + iid + "/discrepancies/" + did +
+           "/photos/" + photo.id}};
+  }
+  function deleteDiscPhoto(path, user) {
+    const ids = routeIds(path, "api", "inspections", "?",
+                         "discrepancies", "?", "photos", "?");
+    if (!ids) throw new SimError(404, "photo not found");
+    const [iid, did, pid] = ids;
+    const idx = state.discPhotos.findIndex(p => p.id === pid &&
+                                                p.discrepancy_id === did);
+    if (idx < 0) throw new SimError(404, "photo not found");
+    const disc = state.discrepancies.find(x => x.id === did);
+    if (!disc || disc.inspection_id !== iid)
+      throw new SimError(404, "photo not found");
+    const insp = state.inspections.find(x => x.id === iid);
+    state.discPhotos.splice(idx, 1);
+    audit(insp ? insp.vehicle_id : null, user.display_name,
+          "inspection-photo", "", "", "",
+          "photo removed from discrepancy " + did +
+          " (inspection " + iid + ")");
+    return {status: 200, body: {ok: true}};
+  }
+  function getDiscPhoto(path) {
+    const parts = path.replace(/^\/|\/$/g, "").split("/");
+    const iid = Number(parts[2]), did = Number(parts[4]),
+      pid = Number(parts[6]);
+    const photo = state.discPhotos.find(p => p.id === pid &&
+                                             p.discrepancy_id === did);
+    const disc = state.discrepancies.find(x => x.id === did);
+    if (!photo || !disc || disc.inspection_id !== iid)
+      throw new SimError(404, "photo not found");
+    return {status: 200, body: photo.dataUrl, ctype: "text/plain"};
+  }
+
   /* ======================================================== router
      Mirrors server.py's dispatch order: public routes first, then
      sign-in required for everything else, then per-route role gates. */
-  function handle(method, path, body, headers) {
+  function handle(method, path, body, headers, query = {}) {
     try {
       body = body || {};
       if (method === "GET") {
@@ -1124,9 +1517,24 @@ function createSimBackend() {
           return {status: 200, body: {conflicts: state.conflicts
             .filter(c => !c.resolved)
             .sort((a, b) => b.id - a.id).map(c => ({...c}))}};
+        if (routeIds(path, "api", "vehicles", "?", "photo"))
+          return getVehiclePhoto(path);
+        if (routeIds(path, "api", "inspections", "?",
+                     "discrepancies", "?", "photos", "?"))
+          return getDiscPhoto(path);
+        if (path === "/api/inspections")
+          return listInspections(query);
+        {
+          const ids = routeIds(path, "api", "inspections", "?");
+          if (ids) {
+            const full = inspectionFull(ids[0]);
+            if (!full) throw new SimError(404, "inspection not found");
+            return {status: 200, body: full};
+          }
+        }
         if (path === "/api/users") {
-          if (user.role !== "admin")
-            throw new SimError(403, "admin only");
+          if (user.role !== "vco")
+            throw new SimError(403, "VCO only");
           return {status: 200, body: {users: [...state.users]
             .sort((a, b) => a.username < b.username ? -1 : 1)
             .map(publicUser)}};
@@ -1145,37 +1553,49 @@ function createSimBackend() {
         }
         const user = requireUser(headers);
         if (path === "/api/users") {
-          if (user.role !== "admin")
-            throw new SimError(403, "admin only");
+          if (user.role !== "vco")
+            throw new SimError(403, "VCO only");
           return createUser(body, user.display_name);
         }
+        if (path === "/api/inspections")
+          return createInspection(body, user);
+        if (routeIds(path, "api", "inspections", "?", "review")) {
+          if (user.role !== "vco")
+            throw new SimError(403, "VCO only");
+          return reviewInspection(path, body, user);
+        }
+        if (routeIds(path, "api", "vehicles", "?", "photo"))
+          return attachVehiclePhoto(path, body, user);
+        if (routeIds(path, "api", "inspections", "?",
+                     "discrepancies", "?", "photos"))
+          return attachDiscPhoto(path, body, user);
         if (path === "/api/vehicles") {
-          requireRole(user, ["editor", "admin"]);
+          requireRole(user, ["editor", "vco"]);
           return insertVehicle(body, user);
         }
         if (path === "/api/authorizations") {
-          requireRole(user, ["editor", "admin"]);
+          requireRole(user, ["editor", "vco"]);
           return upsertAuthorization(body, user);
         }
         if (path === "/api/utcs") {
-          requireRole(user, ["editor", "admin"]);
+          requireRole(user, ["editor", "vco"]);
           return createUtc(body, user);
         }
-        if (path.startsWith("/api/utcs/") && path.endsWith("/vehicles")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "utcs", "?", "vehicles")) {
+          requireRole(user, ["editor", "vco"]);
           return utcAddVehicle(path, body, user);
         }
         if (path === "/api/import/preview") {
-          requireRole(user, ["editor", "admin"]);
+          requireRole(user, ["editor", "vco"]);
           return importPreview(body);
         }
         if (path === "/api/import/confirm") {
-          requireRole(user, ["editor", "admin"]);
+          requireRole(user, ["editor", "vco"]);
           return importConfirm(body, user);
         }
         if (path === "/api/demo/load") {
-          if (user.role !== "admin")
-            throw new SimError(403, "admin only");
+          if (user.role !== "vco")
+            throw new SimError(403, "VCO only");
           // reset/reseed: demo data returns to the shipped seed; any
           // real (non-demo) records the session created are kept,
           // exactly like the server's loader
@@ -1183,51 +1603,55 @@ function createSimBackend() {
           return {status: 200, body: {ok: true}};
         }
         if (path === "/api/demo/remove") {
-          if (user.role !== "admin")
-            throw new SimError(403, "admin only");
+          if (user.role !== "vco")
+            throw new SimError(403, "VCO only");
           const n = purgeDemo(user.display_name);
           return {status: 200, body: {ok: true, removed: n}};
         }
-        if (path.startsWith("/api/conflicts/") &&
-            path.endsWith("/resolve")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "conflicts", "?", "resolve")) {
+          requireRole(user, ["editor", "vco"]);
           return resolveConflict(path, body, user);
         }
         throw new SimError(404, "not found");
       }
       if (method === "PUT") {
         const user = requireUser(headers);
-        if (path.startsWith("/api/vehicles/")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "vehicles", "?")) {
+          requireRole(user, ["editor", "vco"]);
           return updateVehicle(path, body, user);
         }
-        if (path.startsWith("/api/users/")) {
-          if (user.role !== "admin")
-            throw new SimError(403, "admin only");
+        if (routeIds(path, "api", "users", "?")) {
+          if (user.role !== "vco")
+            throw new SimError(403, "VCO only");
           return updateUser(path, body, user);
         }
-        if (path.startsWith("/api/utcs/")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "utcs", "?")) {
+          requireRole(user, ["editor", "vco"]);
           return updateUtc(path, body, user);
         }
         throw new SimError(404, "not found");
       }
       if (method === "DELETE") {
         const user = requireUser(headers);
-        if (path.startsWith("/api/vehicles/")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "vehicles", "?", "photo"))
+          return removeVehiclePhoto(path, user);
+        if (routeIds(path, "api", "inspections", "?",
+                     "discrepancies", "?", "photos", "?"))
+          return deleteDiscPhoto(path, user);
+        if (routeIds(path, "api", "vehicles", "?")) {
+          requireRole(user, ["editor", "vco"]);
           return deleteVehicle(path, user);
         }
-        if (path.startsWith("/api/authorizations/")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "authorizations", "?")) {
+          requireRole(user, ["editor", "vco"]);
           return deleteAuthorization(path, user);
         }
-        if (path.startsWith("/api/utcs/") && path.includes("/vehicles/")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "utcs", "?", "vehicles", "?")) {
+          requireRole(user, ["editor", "vco"]);
           return utcRemoveVehicle(path, user);
         }
-        if (path.startsWith("/api/utcs/")) {
-          requireRole(user, ["editor", "admin"]);
+        if (routeIds(path, "api", "utcs", "?")) {
+          requireRole(user, ["editor", "vco"]);
           return deleteUtc(path, user);
         }
         throw new SimError(404, "not found");
@@ -1298,8 +1722,12 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     const rawUrl = typeof input === "string" ? input
       : (input && input.url) || "";
     let path = rawUrl;
-    try { path = new URL(rawUrl, window.location.href).pathname; }
-    catch (e) { /* keep raw */ }
+    const query = {};
+    try {
+      const u = new URL(rawUrl, window.location.href);
+      path = u.pathname;
+      u.searchParams.forEach((v, k) => { query[k] = v; });
+    } catch (e) { /* keep raw */ }
     if (!path.startsWith("/api/")) return realFetch(input, init);
     const method = ((init && init.method) ||
                     (input && input.method) || "GET").toUpperCase();
@@ -1318,7 +1746,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
     let result;
     try {
-      result = backend.handle(method, path, bodyObj, headers);
+      result = backend.handle(method, path, bodyObj, headers, query);
     } catch (e) {
       result = {status: 500, body: {error: "internal error"}};
     }
@@ -1356,7 +1784,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         "border:1px dashed #7c5cff;border-radius:10px;padding:8px 10px");
       note.innerHTML = "<b>Web sim logins</b> — any password works:<br>" +
         "<b>editor</b> = Editor (can change things) · " +
-        "<b>viewer</b> = Viewer (read-only)<br>" +
+        "<b>operator</b> = Operator (read-only + 1800 inspections) · " +
+        "<b>vco</b> = VCO (accounts + inspection review)<br>" +
         "Any other name also signs in as an Editor.";
       card.insertBefore(note, loginForm);
       const u = document.getElementById("li-username");
