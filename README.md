@@ -27,14 +27,24 @@ immediately.
 
 - **editor** — an Editor: add/edit/delete vehicles, change
   authorizations, build UTCs, import a CSV.
-- **viewer** — a Viewer: the same fleet picture, read-only.
+- **operator** — an Operator: the same fleet picture, read-only for
+  vehicles, plus submitting 1800 inspections.
+- **vco** — a VCO: accounts, demo fleet, and inspection review.
 - Any other name also signs in as an Editor.
 
 **Worth trying:** flip a vehicle's status and watch its unit's MC rate
 and fleet-health picture move · open a UTC and see its own health view ·
 remove an authorization line from a unit screen · build your own UTC
 from the demo vehicles · import a small CSV (Type / Asset Number /
-Location columns) from a unit screen.
+Location columns) from a unit screen · submit an 1800 inspection for a
+vehicle and review it as the VCO.
+
+The sim demo fleet is **JLTVs and M1165 HMMWVs only** — the sim's demo
+intentionally differs from the real server's demo seed (which still
+carries LMTVs, Trailers, F-250s and Generators). The sim implements the
+**full 1800 inspection feature** (submit, review, photos) against its
+in-memory data, exactly like the real app; retention does not apply
+there because a refresh resets everything anyway.
 
 Honest notes: the sim holds **demo SAMPLE data only** — nothing you do
 there is real or saved; **a page refresh resets it** to the demo fleet.
@@ -50,25 +60,60 @@ python3 server.py            # http://127.0.0.1:8420
 python3 server.py --port 9000 --host 0.0.0.0   # reachable on your LAN
 ```
 
-Then open the address in any browser. On a phone, use "Add to Home Screen"
-to install it as an app.
+The shape of it: one computer on the network runs the server; every
+other device just opens the address in a browser. No app store, nothing
+to install from a store.
+
+## Using Skyline on your devices
+
+**Windows (host).** Install Python 3, then run `python3 server.py`.
+On the host itself the app is at http://127.0.0.1:8420. For other
+devices on the same network, run with `--host 0.0.0.0` and give them
+http://&lt;host PC's LAN IP&gt;:8420. If other devices cannot reach it,
+allow Python through Windows Firewall on private networks.
+
+**Windows (client).** Any browser to the LAN address. Edge or Chrome
+can install it as an app window.
+
+**Android.** Chrome to the LAN address, then Install app / Add to Home
+Screen. Camera photo capture works from the browser for vehicle and
+discrepancy photos.
+
+**iOS.** Safari ONLY for installing — Share → Add to Home Screen.
+iOS does not offer installation from Chrome or Firefox. The app then
+opens full-screen from the home-screen icon like any app. Sign in with
+the account the VCO created. The camera/library photo picker works
+from the browser for vehicle and discrepancy photos. iPhones/iPads
+must be on the same network as the server host.
+
+**No-server preview.** The public sim link at the top of this README
+is the zero-install preview for any device — no server, no account
+creation, nothing to install.
+
+**What it does not do.** No push notifications, no background sync.
+Offline behavior is exactly the snapshot + queued-edits model in the
+Offline behavior section below. One caveat: the offline app shell
+(service-worker cache) needs localhost or HTTPS — over a plain
+http://LAN-IP address the browser will not cache the shell, so keep
+the tab open on field devices that will lose signal, or serve the app
+over HTTPS.
 
 ## First-run setup
 
 1. Open Skyline with an empty database — the setup screen appears.
-2. Create the first **Admin** account (username, display name, password of
+2. Create the first **VCO** account (username, display name, password of
    8+ characters).
-3. Sign in as the Admin and create everyone else's accounts from the
-   **Admin** screen. There is **no public sign-up** — every account is
-   created by an Admin.
+3. Sign in as the VCO and create everyone else's accounts from the
+   **VCO** screen. There is **no public sign-up** — every account is
+   created by a VCO.
 
 ## Roles
 
 | Role   | Can do |
 |--------|--------|
-| Viewer | Sign in and read every unit's fleet, audit log and exports. |
-| Editor | Everything a Viewer can, plus add/edit/delete vehicles, set **or delete** authorizations, resolve sync conflicts. (SEL + whoever the Admin designates.) |
-| Admin  | Everything, plus create/edit accounts and load/remove the demo fleet. |
+| Operator | Sign in and read every unit's fleet, audit log and exports, **plus submit 1800 inspections** and attach vehicle/discrepancy photos. |
+| Editor | Everything an Operator can, plus add/edit/delete vehicles, set **or delete** authorizations, resolve sync conflicts. (SEL + whoever the VCO designates.) |
+| VCO  | Everything, plus create/edit accounts, load/remove the demo fleet, and **review 1800 inspections** (the VCO review queue is the notification — there is no email in Skyline). |
 
 A user's unit affiliation is **attribution only** — it shows who they are
 ("updated by Davis, 18 ASOG"), never what they're allowed to see.
@@ -81,7 +126,7 @@ A user's unit affiliation is **attribution only** — it shows who they are
 - **MC rate = FMC ÷ on-hand × 100**, computed live from vehicle records.
 - **On-hand is derived** from the vehicle records — it is never typed in.
   **Authorizations** are tracked per unit per vehicle type and are the only
-  fleet totals an Editor/Admin sets by hand.
+  fleet totals an Editor/VCO sets by hand.
 - **18 ASOG has its own fleet too (v1.1).** Vehicles and authorizations can
   belong to any of the five units, 18 ASOG included. A unit's stats are
   always that unit's **own** fleet; the **group** totals (the home rollup
@@ -92,10 +137,10 @@ A user's unit affiliation is **attribution only** — it shows who they are
 - **Authorizations are edited on the unit screen (v1.1)** — each unit
   screen lists its vehicle types with authorized vs on-hand; Editors can
   change a number inline or add a brand-new type (even with zero vehicles
-  of that type). The Admin screen keeps its authorization management too.
+  of that type). The VCO screen keeps its authorization management too.
 - **Authorizations can also be deleted outright (v1.1.1)** — Editors can
   **Remove** an authorization line entirely, from the unit screen or the
-  Admin table. Removing a line never touches the unit's vehicles of that
+  VCO table. Removing a line never touches the unit's vehicles of that
   type (their on-hand counts are unaffected); to keep the line but zero
   it, just set the number to 0. Like vehicle deletes, removal is
   **online-only** (it is not queued offline) and is written to the audit
@@ -103,7 +148,9 @@ A user's unit affiliation is **attribution only** — it shows who they are
 - **Unit screens** have search, an FMC/PMC/NMC filter, a fleet health
   visualization, and vehicle cards. Tap a vehicle for its page: big status
   buttons, mileage/hours, maintenance due (date and/or miles), location,
-  notes. Viewers get a read-only version of the same page.
+  notes. Operators get a read-only version of the same page, except
+  they can still submit an 1800 inspection and attach a vehicle photo
+  from it.
 
 ## UTCs — deployment packages (v1.1)
 
@@ -122,6 +169,68 @@ vehicles, its stats, and its member list.
 - **UTC changes are online-only in v1.1** (like vehicle deletes): viewing
   UTCs works offline from the cached fleet picture, and the UI says so
   when a change is attempted offline.
+
+## AF Form 1800 inspections (v1.2)
+
+Any signed-in user — Operator included — can open a vehicle's page and
+file an **1800 inspection** (the Operator's Inspection Guide and Trouble
+Report): the official 35-item checklist, each item marked applies /
+pass / fail with a per-item comment, plus up to 10 locally added
+"other" items, mileage/hours, and front/rear tire pressures. On submit,
+in one transaction: the inspection is saved against the vehicle, the
+vehicle's mileage/hours update immediately (audited), every failed item
+becomes an **open discrepancy**, and an inspection audit row is written.
+Submitting **never changes the vehicle's FMC/PMC/NMC status** — that
+stays an Editor/VCO action.
+
+**VCO review.** The VCO sees an unreviewed-inspection count badge on
+the nav and home screen, and an **Inspections** screen listing
+unreviewed first — that queue **is** the notification to the org's VCO
+(Skyline has no email). A VCO review marks the inspection reviewed and
+can disposition each discrepancy as corrected, delayed, or disposition;
+anything left untouched stays open. Reviewing an already-reviewed
+inspection is rejected, and every review step is audited. Review
+closes the record for new content: attaching a photo to a reviewed
+inspection is rejected (a mistaken photo can still be removed).
+
+**If the vehicle is later deleted, its inspections stay.** Deleting
+a vehicle drops its UTC memberships but not its 1800 history — the
+inspection rows carry the unit and bumper at filing time, so the VCO
+queue and the printable form still open them. History outlives the
+record.
+
+**Printable form.** Every inspection has a **View / print form**
+button: a client-side printable view of the full AF Form 1800 (header,
+item table with applies/result/comment, discrepancy table, signature
+lines) with a **Print / Save as PDF** button — print or save as PDF
+from the browser and the document is yours to hand on. The form
+includes the photos (below).
+
+**Vehicle photos (fleet data).** Any signed-in user can attach, replace
+or remove **one photo per vehicle**, shown on the vehicle page only —
+never on home tiles, unit list rows, or search results. The fleet JSON
+carries only a photo yes/no flag, never the bytes, so fleet payloads
+and offline snapshots stay light. Photos are downscaled in the browser
+to max 1600 px JPEG before upload (uploads up to 3 MB; the usual 1 MB
+body cap does not apply to photo posts).
+
+**Discrepancy photos.** Up to **4 photos per discrepancy**, attached
+from the form view after submission. They print inline in the form's
+discrepancy section, so the saved PDF houses the photos.
+
+**30-day retention — 1800 records only.** A completed 1800 record
+(inspection + items + discrepancies + discrepancy photos) is kept
+**30 days from submission, then purged** — at server startup and before
+inspection list reads. Each purge run writes **one** audit row
+("retention purge: N inspection(s) removed") so the deletion itself is
+auditable, and the original submission/review audit rows **remain** as
+the accountability trail. **Vehicle photos do not expire** — they are
+fleet data and persist with the vehicle until edited or removed.
+
+**Online-only.** Inspections and photos are online-only in the real
+app (like vehicle deletes and UTC mutations): offline, the UI says so
+plainly and nothing is queued. The sim is in-memory, so inspections and
+photos work there with no server at all.
 
 ## Import vehicles from Excel (v1.1)
 
@@ -162,7 +271,7 @@ only). Malformed files get a clean error, never a dropped request.
 ## Demo data
 
 The app starts **empty**: the five units exist, with zero vehicles and no
-authorizations. From the **Admin** screen, **Load demo fleet** inserts a
+authorizations. From the **VCO** screen, **Load demo fleet** inserts a
 sample fleet across the squadrons so you can see Skyline alive. Every demo
 vehicle's bumper number starts with `SAMPLE-` and its notes say it is
 sample data. **Remove demo fleet** deletes only the sample vehicles and
