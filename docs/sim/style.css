@@ -228,3 +228,6 @@ select.inline{width:auto;padding:6px 8px}
 .insp-result input{width:auto}
 .insp-comment,.insp-other-comment{grid-column:2 / -1}
 .insp-other-text{grid-column:2}
+
+/* v1.3: main-VCO badge — tasteful gold on the dark/purple theme */
+.main-vco { color: #f5c542; font-weight: 700; white-space: nowrap; }
