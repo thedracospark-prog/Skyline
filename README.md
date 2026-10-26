@@ -25,12 +25,15 @@ immediately.
 
 **Logins** (any password works):
 
-- **editor** — an Editor: add/edit/delete vehicles, change
-  authorizations, build UTCs, import a CSV.
+- **vco** — a VCO: everything — add/edit/delete vehicles, change
+  or delete authorizations, build UTCs, import a CSV, accounts,
+  demo fleet, and inspection review.
 - **operator** — an Operator: the same fleet picture, read-only for
-  vehicles, plus submitting 1800 inspections.
-- **vco** — a VCO: accounts, demo fleet, and inspection review.
-- Any other name also signs in as an Editor.
+  vehicles, plus submitting 1800 inspections and attaching
+  vehicle/discrepancy photos.
+- Any other name also signs in as an Operator. Note: that
+  fallback-login name squats the username — a later VCO user-create
+  with that name 409s (username already exists).
 
 **Worth trying:** flip a vehicle's status and watch its unit's MC rate
 and fleet-health picture move · open a UTC and see its own health view ·
@@ -111,9 +114,43 @@ over HTTPS.
 
 | Role   | Can do |
 |--------|--------|
-| Operator | Sign in and read every unit's fleet, audit log and exports, **plus submit 1800 inspections** and attach vehicle/discrepancy photos. |
-| Editor | Everything an Operator can, plus add/edit/delete vehicles, set **or delete** authorizations, resolve sync conflicts. (SEL + whoever the VCO designates.) |
-| VCO  | Everything, plus create/edit accounts, load/remove the demo fleet, and **review 1800 inspections** (the VCO review queue is the notification — there is no email in Skyline). |
+| Operator | Sign in and read every unit's fleet, audit log and exports, **plus submit 1800 inspections** and attach vehicle/discrepancy photos. Nothing else: no vehicle edits, no authorizations, no user management, no inspection review. |
+| VCO  | Everything: add/edit/delete vehicles, set **or delete** authorizations, build UTCs, import spreadsheets, resolve sync conflicts, create/edit/remove accounts, load/remove the demo fleet, and **review 1800 inspections** (the VCO review queue is the notification — there is no email in Skyline). |
+
+**No cap on VCOs.** There is no ceiling on VCO headcount, per org or
+per unit — personnel is fluid, and any number of VCOs may exist. The
+only VCO-count guard is a floor, and it is **org-global, not
+per-unit**: the **last VCO cannot be demoted or removed**, so an org
+never ends up with zero VCOs. A single unit *can* be left with zero
+VCOs (its main clears when its last VCO leaves); that is not a
+dead end, because VCO rights are global — any VCO can create a VCO
+for that unit, and the first one affiliated becomes its Unit VCO.
+
+**User listing is VCO-only.** Operator "reads everything" covers the
+shared fleet picture, audit log and exports — it does **not** extend
+to `GET /api/users`, which stays VCO-only: the account list is
+account enumeration, not fleet data, and it stays behind the VCO
+gate deliberately.
+
+**The one sanctioned operator-write-to-a-vehicle-row exception.**
+Submitting an 1800 inspection with mileage/hours updates the vehicle
+record's mileage immediately (audited as "1800 inspection
+mileage/hours") — that is the designed v1.2 1800 flow, and the only
+way an operator write touches a vehicle row. Status is never touched
+by inspections: a submitted inspection leaves the vehicle's FMC/PMC/
+NMC status exactly as it was.
+
+**Unit VCO badge (★ Unit VCO).** One VCO per unit carries the gold-star
+**Unit VCO** badge — shown next to their name in the VCO screen's user
+list, in the user chip, and as a "Unit VCO" line on their unit's screen.
+It is **honorific only**: all VCOs have identical rights, and no
+permission check keys off the badge. The first VCO affiliated with a
+unit becomes its Unit VCO automatically; any VCO can transfer the badge
+to another VCO in the same unit (VCO-only, audited); if a Unit VCO is
+demoted, removed, or clears the badge explicitly, the badge auto-passes
+to the earliest-created remaining VCO of that unit, or clears if none
+remains. Badge side-effects are audited too: the displaced main and
+the auto-pass recipient each get their own `is_main_vco` audit row.
 
 A user's unit affiliation is **attribution only** — it shows who they are
 ("updated by Davis, 18 ASOG"), never what they're allowed to see.
@@ -126,7 +163,7 @@ A user's unit affiliation is **attribution only** — it shows who they are
 - **MC rate = FMC ÷ on-hand × 100**, computed live from vehicle records.
 - **On-hand is derived** from the vehicle records — it is never typed in.
   **Authorizations** are tracked per unit per vehicle type and are the only
-  fleet totals an Editor/VCO sets by hand.
+  fleet totals a VCO sets by hand.
 - **18 ASOG has its own fleet too (v1.1).** Vehicles and authorizations can
   belong to any of the five units, 18 ASOG included. A unit's stats are
   always that unit's **own** fleet; the **group** totals (the home rollup
@@ -135,10 +172,10 @@ A user's unit affiliation is **attribution only** — it shows who they are
   shows its own fleet, its own visualization, and a clearly labeled group
   rollup summary.
 - **Authorizations are edited on the unit screen (v1.1)** — each unit
-  screen lists its vehicle types with authorized vs on-hand; Editors can
+  screen lists its vehicle types with authorized vs on-hand; VCOs can
   change a number inline or add a brand-new type (even with zero vehicles
   of that type). The VCO screen keeps its authorization management too.
-- **Authorizations can also be deleted outright (v1.1.1)** — Editors can
+- **Authorizations can also be deleted outright (v1.1.1)** — VCOs can
   **Remove** an authorization line entirely, from the unit screen or the
   VCO table. Removing a line never touches the unit's vehicles of that
   type (their on-hand counts are unaffected); to keep the line but zero
@@ -157,7 +194,7 @@ A user's unit affiliation is **attribution only** — it shows who they are
 A **UTC (Unit Type Code)** is a named deployment package belonging to one
 unit — e.g. code `XFFC1`, "First 30-day rotation package". Each unit
 screen has a **UTCs** section with a card per UTC (assigned count,
-FMC/PMC/NMC, MC-rate bar) and a **New UTC** flow for Editors. A UTC's own
+FMC/PMC/NMC, MC-rate bar) and a **New UTC** flow for VCOs. A UTC's own
 screen renders the **same fleet-health visualization** for just its
 vehicles, its stats, and its member list.
 
@@ -165,14 +202,14 @@ vehicles, its stats, and its member list.
 - A vehicle may only join UTCs of **its own unit**.
 - Deleting a vehicle removes its UTC memberships; deleting a UTC removes
   **only the package, never the vehicles**.
-- UTC create/edit/membership is Editors-only and fully audited.
+- UTC create/edit/membership is VCO-only and fully audited.
 - **UTC changes are online-only in v1.1** (like vehicle deletes): viewing
   UTCs works offline from the cached fleet picture, and the UI says so
   when a change is attempted offline.
 
 ## AF Form 1800 inspections (v1.2)
 
-Any signed-in user — Operator included — can open a vehicle's page and
+Operators and VCOs can open a vehicle's page and
 file an **1800 inspection** (the Operator's Inspection Guide and Trouble
 Report): the official 35-item checklist, each item marked applies /
 pass / fail with a per-item comment, plus up to 10 locally added
@@ -181,7 +218,7 @@ in one transaction: the inspection is saved against the vehicle, the
 vehicle's mileage/hours update immediately (audited), every failed item
 becomes an **open discrepancy**, and an inspection audit row is written.
 Submitting **never changes the vehicle's FMC/PMC/NMC status** — that
-stays an Editor/VCO action.
+stays a VCO action.
 
 **VCO review.** The VCO sees an unreviewed-inspection count badge on
 the nav and home screen, and an **Inspections** screen listing
@@ -206,7 +243,7 @@ lines) with a **Print / Save as PDF** button — print or save as PDF
 from the browser and the document is yours to hand on. The form
 includes the photos (below).
 
-**Vehicle photos (fleet data).** Any signed-in user can attach, replace
+**Vehicle photos (fleet data).** Operators and VCOs can attach, replace
 or remove **one photo per vehicle**, shown on the vehicle page only —
 never on home tiles, unit list rows, or search results. The fleet JSON
 carries only a photo yes/no flag, never the bytes, so fleet payloads
@@ -234,7 +271,7 @@ photos work there with no server at all.
 
 ## Import vehicles from Excel (v1.1)
 
-On any unit screen, Editors get **Import from Excel**:
+On any unit screen, VCOs get **Import from Excel**:
 
 1. Pick a `.xlsx` (or `.csv`) file — the server parses it and returns a
    **preview**: every row marked *will import* or *skipped* with the
@@ -289,7 +326,7 @@ their sample authorizations.
   vehicle's *status* changed on the server while you were editing an older
   copy offline, your status change does **not** silently overwrite it. The
   server keeps its current status, writes a flagged entry to the audit log,
-  and lists the conflict under **Conflicts** for an Editor to resolve
+  and lists the conflict under **Conflicts** for a VCO to resolve
   (keep current, or apply the attempted status).
 
 ## Passwords & sessions
