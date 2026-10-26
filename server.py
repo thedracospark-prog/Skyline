@@ -39,7 +39,7 @@ UNITS = [
 ]
 UNIT_NAMES = [n for n, _ in UNITS]
 SQUADRONS = [n for n, k in UNITS if k == "squadron"]
-ROLES = ("operator", "editor", "vco")
+ROLES = ("operator", "vco")
 STATUSES = ("FMC", "PMC", "NMC")
 # DAF Form 1800 (Operator's Inspection Guide and Trouble Report) — the
 # official 35 checklist items, verbatim. Numbered items always store
@@ -331,6 +331,7 @@ def init_db(conn):
         id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL,
         display_name TEXT NOT NULL, password_hash TEXT NOT NULL,
         unit TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'operator',
+        is_main_vco INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sessions(
         token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
@@ -388,10 +389,35 @@ def init_db(conn):
         image BLOB NOT NULL, mime TEXT NOT NULL,
         created_at TEXT NOT NULL);
     """)
-    # v1.2 role rename: legacy stored roles migrate in place on boot.
+    # v1.3 role collapse: legacy stored roles migrate in place on boot.
     # Nothing else is touched — historical audit rows keep their old text.
+    # (The 'editor' literal below is migration data for pre-v1.3 DBs.)
+    _ensure_column(conn, "users", "is_main_vco", "INTEGER NOT NULL DEFAULT 0")
     conn.execute("UPDATE users SET role='operator' WHERE role='viewer'")
     conn.execute("UPDATE users SET role='vco' WHERE role='admin'")
+    conn.execute("UPDATE users SET role='vco' WHERE role='editor'")
+    # v1.3 main-VCO backfill: per unit, keep the earliest-created
+    # main and clear any additional mains (a legacy/hand-edited DB
+    # can hold two); a unit with VCOs but no main gets its
+    # earliest-created VCO. Flags on non-VCOs are cleared too —
+    # only a VCO may hold the badge.
+    conn.execute("UPDATE users SET is_main_vco=0 WHERE role<>'vco'"
+                 " AND is_main_vco=1")
+    for _name, _kind in UNITS:
+        _mains = conn.execute(
+            "SELECT id FROM users WHERE role='vco' AND unit=?"
+            " AND is_main_vco=1 ORDER BY id", (_name,)).fetchall()
+        if _mains:
+            for _extra in _mains[1:]:
+                conn.execute("UPDATE users SET is_main_vco=0 WHERE id=?",
+                             (_extra["id"],))
+        else:
+            _earliest = conn.execute(
+                "SELECT id FROM users WHERE role='vco' AND unit=?"
+                " ORDER BY id LIMIT 1", (_name,)).fetchone()
+            if _earliest:
+                conn.execute("UPDATE users SET is_main_vco=1 WHERE id=?",
+                             (_earliest["id"],))
     # migrations for databases created by earlier builds
     _ensure_column(conn, "sessions", "expires_at", "TEXT DEFAULT ''")
     _ensure_column(conn, "vehicles", "client_op", "TEXT DEFAULT ''")
@@ -533,6 +559,46 @@ def unit_stats(conn, unit_name):
             "fmc": fmc, "pmc": counts.get("PMC", 0), "nmc": counts.get("NMC", 0),
             "mc_rate": mc_rate, "includes_demo": bool(demo)}
 
+
+def _unit_has_main_vco(conn, unit):
+    return conn.execute(
+        "SELECT COUNT(*) c FROM users WHERE role='vco' AND unit=?"
+        " AND is_main_vco=1", (unit,)).fetchone()["c"] > 0
+
+
+def _set_main_vco(conn, unit, user_id):
+    """Make user_id the unit's main VCO, clearing any other main in
+    that unit. Enforced here (write path), never just in the UI.
+    Honorific only: no permission check anywhere reads this flag.
+    Returns the displaced main's id, or None. Call sites already
+    check role/unit; the assertion hardens the helper itself."""
+    _row = conn.execute("SELECT role, unit FROM users WHERE id=?",
+                        (user_id,)).fetchone()
+    assert _row is not None and _row["role"] == "vco" and \
+        _row["unit"] == unit, \
+        "_set_main_vco called on a non-VCO or wrong-unit user"
+    _prev = conn.execute(
+        "SELECT id FROM users WHERE unit=? AND is_main_vco=1 AND id<>?",
+        (unit, user_id)).fetchone()
+    conn.execute("UPDATE users SET is_main_vco=0 WHERE unit=? AND"
+                 " is_main_vco=1", (unit,))
+    conn.execute("UPDATE users SET is_main_vco=1 WHERE id=?", (user_id,))
+    return _prev["id"] if _prev else None
+
+
+def _pass_main_vco(conn, unit, exclude_id=None):
+    """Auto-pass: earliest-created remaining VCO of the unit becomes
+    main; if none remains, the badge simply clears (no main row left
+    behind, since the departing user is already gone/demoted)."""
+    row = conn.execute(
+        "SELECT id FROM users WHERE role='vco' AND unit=? AND id<>?"
+        " ORDER BY id LIMIT 1", (unit, exclude_id or -1)).fetchone()
+    if row:
+        _set_main_vco(conn, unit, row["id"])
+        return row["id"]
+    return None
+
+
 def fleet_snapshot(conn):
     # Photo bytes NEVER ride the snapshot: only a presence flag, so
     # fleet payloads and offline snapshots stay light. The bytes come
@@ -562,8 +628,14 @@ def fleet_snapshot(conn):
     group = {"unit": "18 ASOG", "kind": "group", **sums,
              "includes_demo": group_demo,
              "mc_rate": mc_rate_half_up(sums["fmc"], sums["on_hand"])}
+    main_vcos = {}
+    for r in conn.execute(
+            "SELECT unit, display_name FROM users WHERE role='vco'"
+            " AND is_main_vco=1"):
+        main_vcos[r["unit"]] = r["display_name"]
     return {"units": units, "group": group, "vehicles": vehicles,
             "authorizations": auths, "utcs": utc_snapshot(conn),
+            "main_vcos": main_vcos,
             "generated_at": now_iso()}
 
 # ------------------------------------------------------------- UTCs
@@ -838,7 +910,7 @@ def _import_date(value):
 
 def build_import_preview(conn, unit, filename, raw):
     """Parse + validate every row for import into `unit`. Returns the
-    preview dict the Editor confirms from. Nothing is written here."""
+    preview dict the VCO confirms from. Nothing is written here."""
     rows = extract_sheet_rows(filename, raw)
     if not rows:
         raise ValidationError("the sheet is empty")
@@ -1221,6 +1293,9 @@ class Handler(BaseHTTPRequestHandler):
                 n = conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
                 return self._send(200, {"setup_needed": n == 0})
             if path == "/api/export.csv":
+                # v1.3: export is a READ of the shared fleet picture, so
+                # both roles may use it (operator reads everything);
+                # every WRITE below is role-gated.
                 if not self._require(conn):
                     return
                 snap = fleet_snapshot(conn)
@@ -1363,7 +1438,7 @@ class Handler(BaseHTTPRequestHandler):
                                          role=data.get("role", "operator"),
                                          actor=user["display_name"])
             if path == "/api/inspections":
-                # any signed-in role may submit (operators included)
+                # operator or VCO may submit (both roles)
                 return self._create_inspection(conn, data, user)
             if self._route_id(path, "api", "inspections", "?",
                               "review") is not None:
@@ -1372,35 +1447,35 @@ class Handler(BaseHTTPRequestHandler):
                 return self._review_inspection(conn, path, data, user)
             if self._route_id(path, "api", "vehicles", "?",
                               "photo") is not None:
-                # any signed-in role may attach a vehicle photo
+                # operator or VCO may attach a vehicle photo
                 return self._attach_vehicle_photo(conn, path, data, user)
             if self._route_id(path, "api", "inspections", "?",
                               "discrepancies", "?", "photos") is not None:
-                # any signed-in role may attach a discrepancy photo
+                # operator or VCO may attach a discrepancy photo
                 return self._attach_discrepancy_photo(conn, path, data, user)
             if path == "/api/vehicles":
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._insert_vehicle(conn, data, user)
             if path == "/api/authorizations":
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._upsert_authorization(conn, data, user)
             if path == "/api/utcs":
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._create_utc(conn, data, user)
             if self._route_id(path, "api", "utcs", "?",
                               "vehicles") is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._utc_add_vehicle(conn, path, data, user)
             if path == "/api/import/preview":
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._import_preview(conn, data, user)
             if path == "/api/import/confirm":
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._import_confirm(conn, data, user)
             if path == "/api/demo/load":
@@ -1417,7 +1492,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "removed": n})
             if self._route_id(path, "api", "conflicts", "?",
                               "resolve") is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._resolve_conflict(conn, path, data, user)
             self._send(404, {"error": "not found"})
@@ -1449,8 +1524,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(403, {"error": "setup already complete"})
             cur = conn.execute(
                 "INSERT INTO users(username, display_name, password_hash, unit,"
-                " role, created_at) VALUES (?,?,?,?,?,?)",
-                (username, display, hash_password(password), unit, "vco",
+                " role, is_main_vco, created_at) VALUES (?,?,?,?,?,?,?)",
+                (username, display, hash_password(password), unit, "vco", 1,
                  now_iso()))
             uid = cur.lastrowid
             audit(conn, None, "setup", "account",
@@ -1544,7 +1619,7 @@ class Handler(BaseHTTPRequestHandler):
                   detail=f"{row['unit']} / {row['vehicle_type']} (deleted)")
         return self._send(200, {"ok": True})
 
-    # ---- UTC handlers (Editors only; every mutation audited)
+    # ---- UTC handlers (VCO only; every mutation audited)
     def _create_utc(self, conn, data, user):
         clean = validate_utc(data, partial=False)
         with immediate_tx(conn):
@@ -1707,9 +1782,9 @@ class Handler(BaseHTTPRequestHandler):
                          f" from {utc['unit']} UTC {utc['code']}")
         return self._send(200, {"ok": True})
 
-    # ---- AF Form 1800 inspections (any signed-in role submits;
+    # ---- AF Form 1800 inspections (operator or VCO submits;
     #      VCO reviews; the vehicle FMC/PMC/NMC status is never changed
-    #      by an inspection — that stays an editor/VCO action)
+    #      by an inspection — that stays a VCO action)
     def _inspection_full(self, conn, iid):
         """Inspection + its items + discrepancies, or None."""
         row = conn.execute("SELECT * FROM inspections WHERE id=?",
@@ -1986,7 +2061,7 @@ class Handler(BaseHTTPRequestHandler):
     def _delete_discrepancy_photo(self, conn, path, user):
         """Remove one discrepancy photo (v1.2 fix pass): without this,
         a mistaken photo permanently occupied one of the 4 cap slots
-        until the 30-day purge. Any signed-in role, audited, 404s
+        until the 30-day purge. Operator or VCO, audited, 404s
         matching the GET branch. Allowed on reviewed inspections too:
         removal takes nothing away from the closed record."""
         ids = self._route_id(path, "api", "inspections", "?",
@@ -2017,7 +2092,7 @@ class Handler(BaseHTTPRequestHandler):
                          f" (inspection {iid})")
         return self._send(200, {"ok": True})
 
-    # ---- Excel import (two-step: preview, then confirm; Editors only)
+    # ---- Excel import (two-step: preview, then confirm; VCO only)
     @staticmethod
     def _import_file_from(data):
         unit = data.get("unit")
@@ -2121,19 +2196,54 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "invalid role"})
         if unit not in UNIT_NAMES:
             return self._send(400, {"error": "unit must be one of the five units"})
-        try:
-            cur = conn.execute(
-                "INSERT INTO users(username, display_name, password_hash, unit,"
-                " role, created_at) VALUES (?,?,?,?,?,?)",
-                (username, display, hash_password(password), unit, role,
-                 now_iso()))
-            conn.commit()
-        except sqlite3.IntegrityError:
-            return self._send(409, {"error": "username already exists"})
-        audit(conn, None, actor, "account", detail=f"created {username} ({role})")
-        conn.commit()
-        row = conn.execute("SELECT * FROM users WHERE id=?",
-                           (cur.lastrowid,)).fetchone()
+        # v1.3 fix pass: create-path badge consistency — PUT 400s on
+        # is_main_vco:true for a non-VCO target, so create must too
+        # instead of silently ignoring the flag.
+        if "is_main_vco" in data and \
+                data["is_main_vco"] not in (True, False, 0, 1):
+            return self._send(400, {"error":
+                                    "is_main_vco must be true or false"})
+        if data.get("is_main_vco") and role != "vco":
+            return self._send(400, {"error":
+                                    "only a VCO can be the unit VCO"})
+        # the whole create (insert + badge + audit) runs in one
+        # write transaction — previously the insert committed, then
+        # the badge set committed separately, so a crash between the
+        # two left a half-created account.
+        with immediate_tx(conn):
+            try:
+                cur = conn.execute(
+                    "INSERT INTO users(username, display_name, password_hash, unit,"
+                    " role, is_main_vco, created_at) VALUES (?,?,?,?,?,?,?)",
+                    (username, display, hash_password(password), unit, role, 0,
+                     now_iso()))
+            except sqlite3.IntegrityError:
+                return self._send(409, {"error": "username already exists"})
+            # v1.3 main-VCO default: the first VCO affiliated with a unit
+            # becomes its main VCO automatically; an explicit is_main_vco
+            # request transfers the badge (clearing the previous main).
+            # No cap on VCO headcount: any number of VCOs may exist.
+            is_main = 0
+            displaced = None
+            if role == "vco":
+                if data.get("is_main_vco") or not _unit_has_main_vco(conn, unit):
+                    displaced = _set_main_vco(conn, unit, cur.lastrowid)
+                    is_main = 1
+            detail = f"created {username} ({role})"
+            if is_main:
+                detail += " — Unit VCO"
+            audit(conn, None, actor, "account", detail=detail)
+            if displaced is not None:
+                # badge side-effect, audited too: the displaced main
+                # loses the badge even though the request named only
+                # the new account.
+                drow = conn.execute("SELECT username FROM users WHERE id=?",
+                                    (displaced,)).fetchone()
+                if drow:
+                    audit(conn, None, actor, "account", field="is_main_vco",
+                          old=1, new=0, detail=f"user {drow['username']}")
+            row = conn.execute("SELECT * FROM users WHERE id=?",
+                               (cur.lastrowid,)).fetchone()
         return self._send(201, {"user": public_user(dict(row))})
 
     def _insert_vehicle(self, conn, data, user):
@@ -2197,7 +2307,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ids = self._route_id(path, "api", "vehicles", "?")
             if ids is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 vid = ids[0]
                 with immediate_tx(conn):
@@ -2213,7 +2323,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(403, {"error": "VCO only"})
                 return self._update_user(conn, path, data, user)
             if self._route_id(path, "api", "utcs", "?") is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._update_utc(conn, path, data, user)
             self._send(404, {"error": "not found"})
@@ -2265,7 +2375,18 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValidationError("password too short (min 8)")
             updates["password_hash"] = hash_password(data["password"])
             changes.append(("password", "(set)", "(reset)"))
-        if not updates:
+        # v1.3 main-VCO transfer: VCO-only (the route already gates),
+        # audited, and enforced in this write path. Only a VCO can
+        # hold the badge; the flag grants no permissions anywhere.
+        main_requested = None
+        if "is_main_vco" in data:
+            if data["is_main_vco"] not in (True, False, 0, 1):
+                raise ValidationError("is_main_vco must be true or false")
+            main_requested = bool(data["is_main_vco"])
+            final_role = updates.get("role", target["role"])
+            if main_requested and final_role != "vco":
+                raise ValidationError("only a VCO can be the unit VCO")
+        if not updates and main_requested is None:
             return self._send(200, {"ok": True})  # no-op: no audit, no writes
         with immediate_tx(conn):
             # last-VCO guard, re-checked under BEGIN IMMEDIATE where
@@ -2276,6 +2397,25 @@ class Handler(BaseHTTPRequestHandler):
                                  (uid,)).fetchone()
             if not fresh:
                 return self._send(404, {"error": "user not found"})
+            fresh = dict(fresh)
+            # stale-read guard: `updates`/`changes` were built from
+            # the pre-transaction read; a concurrent writer may have
+            # already applied the same change. Drop no-ops and re-base
+            # audit old values on the fresh row, so the audit trail
+            # never claims a change that did not happen.
+            for _f in ("role", "unit", "display_name"):
+                if _f in updates:
+                    if fresh[_f] == updates[_f]:
+                        del updates[_f]
+                        changes = [c for c in changes if c[0] != _f]
+                    else:
+                        changes = [(f, fresh[_f] if f == _f else o, n)
+                                   for (f, o, n) in changes]
+            old_main = int(fresh["is_main_vco"] or 0)
+            old_unit = fresh["unit"]
+            if not updates and main_requested is not None and \
+                    main_requested == bool(old_main):
+                return self._send(200, {"ok": True})  # badge already as asked
             if "role" in updates and fresh["role"] == "vco":
                 vcos = conn.execute(
                     "SELECT COUNT(*) c FROM users WHERE role='vco'"
@@ -2283,23 +2423,133 @@ class Handler(BaseHTTPRequestHandler):
                 if vcos <= 1:
                     raise ValidationError(
                         "cannot demote the last VCO", status=400)
-            sets = ", ".join(f"{k}=?" for k in updates)
-            conn.execute(f"UPDATE users SET {sets} WHERE id=?",
-                         (*updates.values(), uid))
+            if updates:
+                sets = ", ".join(f"{k}=?" for k in updates)
+                conn.execute(f"UPDATE users SET {sets} WHERE id=?",
+                             (*updates.values(), uid))
             # credential/role changes revoke that user's sessions
             if "password_hash" in updates or "role" in updates:
                 conn.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
+            new_row = conn.execute("SELECT * FROM users WHERE id=?",
+                                   (uid,)).fetchone()
+            new_role = new_row["role"]
+            new_unit = new_row["unit"]
+            # badge transitions, all inside this transaction.
+            # badge_audits: (user_id, old, new) for OTHER users whose
+            # badge moves as a side effect (displaced main, auto-pass
+            # recipient) — the target's own badge change is audited
+            # via `changes` below.
+            badge_audits = []
+            if old_main and (new_role != "vco" or new_unit != old_unit):
+                # main VCO leaves the seat (demotion or unit move):
+                # clear, then auto-pass to the earliest remaining VCO
+                # of the OLD unit; if none remains it simply clears.
+                conn.execute("UPDATE users SET is_main_vco=0 WHERE id=?",
+                             (uid,))
+                _new_main = _pass_main_vco(conn, old_unit, uid)
+                if _new_main is not None:
+                    badge_audits.append((_new_main, 0, 1))
+            if new_role == "vco":
+                if main_requested is True:
+                    _displaced = _set_main_vco(conn, new_unit, uid)
+                    if _displaced is not None:
+                        badge_audits.append((_displaced, 1, 0))
+                elif main_requested is False:
+                    conn.execute("UPDATE users SET is_main_vco=0 WHERE id=?",
+                                 (uid,))
+                    # explicit false by a main auto-passes, exactly as
+                    # demotion does — otherwise the unit is left with
+                    # VCOs but no main.
+                    if old_main and new_unit == old_unit:
+                        _new_main = _pass_main_vco(conn, old_unit, uid)
+                        if _new_main is not None:
+                            badge_audits.append((_new_main, 0, 1))
+                elif old_main and new_unit == old_unit:
+                    pass  # main stays main in the same unit
+                elif new_unit != old_unit or "role" in updates:
+                    # promotion, or a main-less move: fill an empty
+                    # seat, never displace an existing main
+                    if not _unit_has_main_vco(conn, new_unit):
+                        _set_main_vco(conn, new_unit, uid)
+                    elif new_unit != old_unit:
+                        conn.execute(
+                            "UPDATE users SET is_main_vco=0 WHERE id=?",
+                            (uid,))
+            else:
+                conn.execute("UPDATE users SET is_main_vco=0 WHERE id=?",
+                             (uid,))
+            final_main = conn.execute(
+                "SELECT is_main_vco FROM users WHERE id=?",
+                (uid,)).fetchone()["is_main_vco"]
+            if int(final_main or 0) != old_main:
+                changes.append(("is_main_vco", old_main,
+                                int(final_main or 0)))
             for field, old, new in changes:
                 audit(conn, None, actor_user["display_name"], "account",
                       field=field, old=old, new=new,
                       detail=f"user {target['username']}")
+            for _bid, _o, _n in badge_audits:
+                _brow = conn.execute("SELECT username FROM users WHERE id=?",
+                                     (_bid,)).fetchone()
+                if _brow:
+                    audit(conn, None, actor_user["display_name"], "account",
+                          field="is_main_vco", old=_o, new=_n,
+                          detail=f"user {_brow['username']}")
+        return self._send(200, {"ok": True})
+
+    def _delete_user(self, conn, path, actor_user):
+        """VCO-only user removal (v1.3: new endpoint — v1.2 had create
+        and demote but no remove). Last-VCO guard inside the write
+        transaction, like demotion; a removed main VCO auto-passes the
+        badge to the earliest remaining VCO of that unit."""
+        uid = self._path_id(path, "/api/users/")
+        if uid is None:
+            return self._send(404, {"error": "user not found"})
+        target = conn.execute("SELECT * FROM users WHERE id=?",
+                              (uid,)).fetchone()
+        if not target:
+            return self._send(404, {"error": "user not found"})
+        target = dict(target)
+        with immediate_tx(conn):
+            fresh = conn.execute("SELECT * FROM users WHERE id=?",
+                                 (uid,)).fetchone()
+            if not fresh:
+                return self._send(404, {"error": "user not found"})
+            if fresh["role"] == "vco":
+                vcos = conn.execute(
+                    "SELECT COUNT(*) c FROM users WHERE role='vco'"
+                    ).fetchone()["c"]
+                if vcos <= 1:
+                    raise ValidationError(
+                        "cannot remove the last VCO", status=400)
+            was_main = int(fresh["is_main_vco"] or 0)
+            unit = fresh["unit"]
+            conn.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
+            conn.execute("DELETE FROM users WHERE id=?", (uid,))
+            new_main = _pass_main_vco(conn, unit, uid) if was_main else None
+            audit(conn, None, actor_user["display_name"], "account",
+                  detail=f"removed user {target['username']}")
+            if was_main:
+                # badge side-effects, audited too: the removed main
+                # loses the badge, and the auto-pass recipient gains it.
+                audit(conn, None, actor_user["display_name"], "account",
+                      field="is_main_vco", old=1, new=0,
+                      detail=f"user {target['username']}")
+                if new_main is not None:
+                    brow = conn.execute(
+                        "SELECT username FROM users WHERE id=?",
+                        (new_main,)).fetchone()
+                    if brow:
+                        audit(conn, None, actor_user["display_name"],
+                              "account", field="is_main_vco", old=0, new=1,
+                              detail=f"user {brow['username']}")
         return self._send(200, {"ok": True})
 
     def _update_vehicle(self, conn, row, data, user):
         """Field-level merge inside the caller's transaction. A status
         change whose base_status no longer matches the server's current
         status is a sync conflict: other fields still merge, the status is
-        NOT overwritten, a conflict + audit flag are written, and an Editor
+        NOT overwritten, a conflict + audit flag are written, and a VCO
         resolves it later. A true no-op writes nothing at all.
         Returns (status_code, payload)."""
         vid = row["id"]
@@ -2397,7 +2647,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ids = self._route_id(path, "api", "vehicles", "?", "photo")
             if ids is not None:
-                # any signed-in role may remove a vehicle photo
+                # operator or VCO may remove a vehicle photo
                 vid = ids[0]
                 with immediate_tx(conn):
                     veh = conn.execute(
@@ -2417,11 +2667,15 @@ class Handler(BaseHTTPRequestHandler):
             if self._route_id(path, "api", "inspections", "?",
                               "discrepancies", "?", "photos",
                               "?") is not None:
-                # any signed-in role may remove a discrepancy photo
+                # operator or VCO may remove a discrepancy photo
                 return self._delete_discrepancy_photo(conn, path, user)
+            if self._route_id(path, "api", "users", "?") is not None:
+                if user["role"] != "vco":
+                    return self._send(403, {"error": "VCO only"})
+                return self._delete_user(conn, path, user)
             ids = self._route_id(path, "api", "vehicles", "?")
             if ids is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 vid = ids[0]
                 with immediate_tx(conn):
@@ -2440,16 +2694,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
             if self._route_id(path, "api", "authorizations",
                               "?") is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._delete_authorization(conn, path, user)
             if self._route_id(path, "api", "utcs", "?",
                               "vehicles", "?") is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._utc_remove_vehicle(conn, path, user)
             if self._route_id(path, "api", "utcs", "?") is not None:
-                if not self._require_role(user, ("editor", "vco")):
+                if not self._require_role(user, ("vco",)):
                     return
                 return self._delete_utc(conn, path, user)
             self._send(404, {"error": "not found"})
@@ -2466,7 +2720,8 @@ class Handler(BaseHTTPRequestHandler):
 def public_user(u):
     return {"id": u["id"], "username": u["username"],
             "display_name": u["display_name"], "unit": u["unit"],
-            "role": u["role"]}
+            "role": u["role"],
+            "is_main_vco": int(u.get("is_main_vco") or 0)}
 
 def public_vehicle(v):
     """Vehicle dict safe for JSON: photo bytes never leave the server —
