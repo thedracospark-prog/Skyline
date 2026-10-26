@@ -34,7 +34,7 @@ const UNITS = [
 ];
 const UNIT_NAMES = UNITS.map(u => u[0]);
 const STATUSES = ["FMC", "PMC", "NMC"];
-const ROLES = ["operator", "editor", "vco"];
+const ROLES = ["operator", "vco"];
 /* DAF Form 1800 — the official 35 checklist items, verbatim (mirrors
    server.py's INSPECTION_ITEMS). */
 const INSPECTION_ITEMS = [
@@ -390,7 +390,8 @@ function importDate(value) {
 /* ============================================================ the backend */
 function createSimBackend() {
   const state = {
-    users: [],            // {id, username, display_name, unit, role, _pw}
+    users: [],            // {id, username, display_name, unit, role,
+                            //  is_main_vco, _pw}
     sessions: new Map(),  // token -> user id
     vehicles: [],
     authorizations: [],
@@ -406,7 +407,34 @@ function createSimBackend() {
   };
 
   const publicUser = (u) => ({id: u.id, username: u.username,
-    display_name: u.display_name, unit: u.unit, role: u.role});
+    display_name: u.display_name, unit: u.unit, role: u.role,
+    is_main_vco: u.is_main_vco ? 1 : 0});
+  /* v1.3 main-VCO helpers (mirror of server.py): unique per unit,
+     enforced in the write path; honorific only — no permission
+     check anywhere reads is_main_vco. */
+  const unitHasMain = (unit) =>
+    state.users.some(u => u.role === "vco" && u.unit === unit &&
+                          u.is_main_vco);
+  const setMainVco = (unit, userId) => {
+    const t = userById(userId);
+    if (!t || t.role !== "vco" || t.unit !== unit)
+      throw new Error("setMainVco called on a non-VCO or wrong-unit user");
+    let displaced = null;
+    for (const u of state.users)
+      if (u.unit === unit && u.is_main_vco && u.id !== userId)
+        displaced = u.id;
+    for (const u of state.users)
+      if (u.unit === unit) u.is_main_vco = 0;
+    t.is_main_vco = 1;
+    return displaced;
+  };
+  const passMainVco = (unit, excludeId) => {
+    const next = state.users.filter(u => u.role === "vco" &&
+      u.unit === unit && u.id !== excludeId)
+      .sort((a, b) => a.id - b.id)[0];
+    if (next) setMainVco(unit, next.id);
+    return next ? next.id : null;
+  };
   /* Vehicle dict safe for JSON: the in-memory photo data URL (_photo)
      never leaves the backend — only a presence flag, like the server. */
   const publicVehicle = (v) => {
@@ -475,17 +503,18 @@ function createSimBackend() {
     }
   }
 
-  /* ---- seed: the demo fleet + two SAMPLE UTCs + the two sim users */
+  /* ---- seed: the demo fleet + two SAMPLE UTCs + the sim users.
+     Demo VCO is the main VCO for 18 ASOG.
+     No boot backfill is needed here (unlike server.py): the sim
+     seed is always clean — exactly one main per unit by
+     construction — and a refresh reseeds from scratch. */
   state.users.push(
-    {id: state.nextUserId++, username: "editor",
-     display_name: "Demo Editor", unit: "18 ASOG", role: "editor",
-     _pw: null},
     {id: state.nextUserId++, username: "operator",
      display_name: "Demo Operator", unit: "14 ASOS", role: "operator",
-     _pw: null},
+     is_main_vco: 0, _pw: null},
     {id: state.nextUserId++, username: "vco",
      display_name: "Demo VCO", unit: "18 ASOG", role: "vco",
-     _pw: null});
+     is_main_vco: 1, _pw: null});
   loadDemo("Skyline Sim");
   for (const s of SEED_UTCS) {
     const u = {id: state.nextUtcId++, unit: s.unit, code: s.code,
@@ -545,7 +574,11 @@ function createSimBackend() {
         vehicle_ids: [...state.utcVehicles]
           .filter(k => Number(k.split(":")[0]) === u.id)
           .map(k => Number(k.split(":")[1])).sort((x, y) => x - y)}));
+    const mainVcos = {};
+    for (const u of state.users)
+      if (u.role === "vco" && u.is_main_vco) mainVcos[u.unit] = u.display_name;
     return {units, group, vehicles, authorizations: auths, utcs,
+            main_vcos: mainVcos,
             generated_at: nowIso()};
   }
 
@@ -611,19 +644,24 @@ function createSimBackend() {
   function login(data) {
     const username = String(data.username || "").trim();
     const password = data.password || "";
+    if (!username) throw bad("username required");
     let user = findUser(username);
     if (user) {
-      // accounts created inside the sim check their password; the two
+      // accounts created inside the sim check their password; the
       // seeded demo accounts accept any password (documented on the
       // login screen and in the README)
       if (user._pw !== null && user._pw !== password)
         throw new SimError(401, "bad username or password");
     } else {
       // predictable demo rule: "operator" is the Operator (seeded above);
-      // any other new name signs in as an Editor demo user
+      // any other new name signs in as an Operator demo user
+      // (least privilege — full writes need the "vco" login).
+      // Note: a fallback-login name squats the username — a later
+      // VCO user-create with that name 409s (username already exists).
       user = {id: state.nextUserId++, username,
-              display_name: username || "Demo Editor",
-              unit: "18 ASOG", role: "editor", _pw: null};
+              display_name: username || "Demo Operator",
+              unit: "18 ASOG", role: "operator", is_main_vco: 0,
+              _pw: null};
       state.users.push(user);
     }
     const token = "sim-" + (++state.tokenSeq) + "-" +
@@ -642,13 +680,37 @@ function createSimBackend() {
     if (!ROLES.includes(role)) throw bad("invalid role");
     if (!UNIT_NAMES.includes(unit))
       throw bad("unit must be one of the five units");
+    if (data.is_main_vco !== undefined && data.is_main_vco !== true &&
+        data.is_main_vco !== false && data.is_main_vco !== 0 &&
+        data.is_main_vco !== 1)
+      throw bad("is_main_vco must be true or false");
+    // create-path badge consistency (server parity): PUT 400s on
+    // is_main_vco:true for a non-VCO target, so create must too
+    // instead of silently ignoring the flag.
+    if (data.is_main_vco && role !== "vco")
+      throw bad("only a VCO can be the unit VCO");
     if (findUser(username))
       throw new SimError(409, "username already exists");
     const user = {id: state.nextUserId++, username, display_name: display,
-                  unit, role, _pw: String(password)};
+                  unit, role, is_main_vco: 0, _pw: String(password)};
     state.users.push(user);
+    // v1.3 main-VCO default: first VCO of a unit becomes its main
+    // VCO; an explicit flag transfers the badge. No VCO cap.
+    let mainNote = "";
+    let displaced = null;
+    if (role === "vco" && (data.is_main_vco || !unitHasMain(unit))) {
+      displaced = setMainVco(unit, user.id);
+      mainNote = " — Unit VCO";
+    }
     audit(null, actor, "account", "", "", "",
-          "created " + username + " (" + role + ")");
+          "created " + username + " (" + role + ")" + mainNote);
+    if (displaced !== null) {
+      // badge side-effect, audited too: the displaced main loses
+      // the badge even though the request named only the new account.
+      const d = userById(displaced);
+      if (d) audit(null, actor, "account", "is_main_vco", 1, 0,
+                   "user " + d.username);
+    }
     return {status: 201, body: {user: publicUser(user)}};
   }
   function updateUser(path, data, actorUser) {
@@ -656,6 +718,7 @@ function createSimBackend() {
     if (uid === null) throw new SimError(404, "user not found");
     const target = userById(uid);
     if (!target) throw new SimError(404, "user not found");
+    const oldMain = target.is_main_vco ? 1 : 0;
     const updates = {};   // field -> [old, new]
     if ("role" in data) {
       if (!ROLES.includes(data.role)) throw bad("invalid role");
@@ -683,17 +746,100 @@ function createSimBackend() {
       newPw = String(data.password);
       updates.password = ["(set)", "(reset)"];
     }
-    if (!Object.keys(updates).length && !newPw)
+    // v1.3 main-VCO transfer: only a VCO can hold the badge.
+    let mainRequested = null;
+    if ("is_main_vco" in data) {
+      if (data.is_main_vco !== true && data.is_main_vco !== false &&
+          data.is_main_vco !== 0 && data.is_main_vco !== 1)
+        throw bad("is_main_vco must be true or false");
+      mainRequested = !!data.is_main_vco;
+      const finalRole = "role" in updates ? updates.role[1] : target.role;
+      if (mainRequested && finalRole !== "vco")
+        throw bad("only a VCO can be the unit VCO");
+    }
+    if (!Object.keys(updates).length && mainRequested === null)
       return {status: 200, body: {ok: true}};
+    if (!Object.keys(updates).length && mainRequested === !!oldMain)
+      return {status: 200, body: {ok: true}};
+    const oldUnit = target.unit;
+    // badgeAudits: [userId, old, new] for OTHER users whose badge
+    // moves as a side effect (displaced main, auto-pass recipient).
+    const badgeAudits = [];
     for (const [field, [oldV, newV]] of Object.entries(updates)) {
       if (field === "password") target._pw = newPw;
       else target[field] = newV;
       audit(null, actorUser.display_name, "account", field, oldV, newV,
             "user " + target.username);
     }
+    if (oldMain && (target.role !== "vco" || target.unit !== oldUnit)) {
+      target.is_main_vco = 0;
+      const nm = passMainVco(oldUnit, uid);
+      if (nm !== null) badgeAudits.push([nm, 0, 1]);
+    }
+    if (target.role === "vco") {
+      if (mainRequested === true) {
+        const disp = setMainVco(target.unit, uid);
+        if (disp !== null) badgeAudits.push([disp, 1, 0]);
+      } else if (mainRequested === false) {
+        target.is_main_vco = 0;
+        // explicit false by a main auto-passes, exactly as demotion
+        // does — otherwise the unit is left with VCOs but no main.
+        if (oldMain && target.unit === oldUnit) {
+          const nm = passMainVco(oldUnit, uid);
+          if (nm !== null) badgeAudits.push([nm, 0, 1]);
+        }
+      } else if (oldMain && target.unit === oldUnit) { /* stays main */ }
+      else if (target.unit !== oldUnit || "role" in updates) {
+        if (!unitHasMain(target.unit)) setMainVco(target.unit, uid);
+        else if (target.unit !== oldUnit) target.is_main_vco = 0;
+      }
+    } else {
+      target.is_main_vco = 0;
+    }
+    const newMain = target.is_main_vco ? 1 : 0;
+    if (newMain !== oldMain)
+      audit(null, actorUser.display_name, "account", "is_main_vco",
+            oldMain, newMain, "user " + target.username);
+    // badge side-effects on OTHER users, audited too (displaced main,
+    // auto-pass recipient) — the target's own badge change is audited
+    // just above.
+    for (const [bid, o, nw] of badgeAudits) {
+      const b = userById(bid);
+      if (b) audit(null, actorUser.display_name, "account", "is_main_vco",
+                   o, nw, "user " + b.username);
+    }
     if ("password" in updates || "role" in updates)
       for (const [tok, id] of [...state.sessions])
         if (id === uid) state.sessions.delete(tok);
+    return {status: 200, body: {ok: true}};
+  }
+  function deleteUser(path, actorUser) {
+    const uid = pathId(path, "/api/users/");
+    if (uid === null) throw new SimError(404, "user not found");
+    const target = userById(uid);
+    if (!target) throw new SimError(404, "user not found");
+    if (target.role === "vco" &&
+        state.users.filter(u => u.role === "vco").length <= 1)
+      throw bad("cannot remove the last VCO");
+    const wasMain = !!target.is_main_vco;
+    const unit = target.unit;
+    state.users = state.users.filter(u => u.id !== uid);
+    for (const [tok, id] of [...state.sessions])
+      if (id === uid) state.sessions.delete(tok);
+    const newMain = wasMain ? passMainVco(unit, uid) : null;
+    audit(null, actorUser.display_name, "account", "", "", "",
+          "removed user " + target.username);
+    if (wasMain) {
+      // badge side-effects, audited too: the removed main loses the
+      // badge, and the auto-pass recipient gains it.
+      audit(null, actorUser.display_name, "account", "is_main_vco", 1, 0,
+            "user " + target.username);
+      if (newMain !== null) {
+        const b = userById(newMain);
+        if (b) audit(null, actorUser.display_name, "account", "is_main_vco",
+                     0, 1, "user " + b.username);
+      }
+    }
     return {status: 200, body: {ok: true}};
   }
 
@@ -1570,27 +1716,27 @@ function createSimBackend() {
                      "discrepancies", "?", "photos"))
           return attachDiscPhoto(path, body, user);
         if (path === "/api/vehicles") {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return insertVehicle(body, user);
         }
         if (path === "/api/authorizations") {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return upsertAuthorization(body, user);
         }
         if (path === "/api/utcs") {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return createUtc(body, user);
         }
         if (routeIds(path, "api", "utcs", "?", "vehicles")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return utcAddVehicle(path, body, user);
         }
         if (path === "/api/import/preview") {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return importPreview(body);
         }
         if (path === "/api/import/confirm") {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return importConfirm(body, user);
         }
         if (path === "/api/demo/load") {
@@ -1609,7 +1755,7 @@ function createSimBackend() {
           return {status: 200, body: {ok: true, removed: n}};
         }
         if (routeIds(path, "api", "conflicts", "?", "resolve")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return resolveConflict(path, body, user);
         }
         throw new SimError(404, "not found");
@@ -1617,7 +1763,7 @@ function createSimBackend() {
       if (method === "PUT") {
         const user = requireUser(headers);
         if (routeIds(path, "api", "vehicles", "?")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return updateVehicle(path, body, user);
         }
         if (routeIds(path, "api", "users", "?")) {
@@ -1626,7 +1772,7 @@ function createSimBackend() {
           return updateUser(path, body, user);
         }
         if (routeIds(path, "api", "utcs", "?")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return updateUtc(path, body, user);
         }
         throw new SimError(404, "not found");
@@ -1638,20 +1784,25 @@ function createSimBackend() {
         if (routeIds(path, "api", "inspections", "?",
                      "discrepancies", "?", "photos", "?"))
           return deleteDiscPhoto(path, user);
+        if (routeIds(path, "api", "users", "?")) {
+          if (user.role !== "vco")
+            throw new SimError(403, "VCO only");
+          return deleteUser(path, user);
+        }
         if (routeIds(path, "api", "vehicles", "?")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return deleteVehicle(path, user);
         }
         if (routeIds(path, "api", "authorizations", "?")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return deleteAuthorization(path, user);
         }
         if (routeIds(path, "api", "utcs", "?", "vehicles", "?")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return utcRemoveVehicle(path, user);
         }
         if (routeIds(path, "api", "utcs", "?")) {
-          requireRole(user, ["editor", "vco"]);
+          requireRole(user, ["vco"]);
           return deleteUtc(path, user);
         }
         throw new SimError(404, "not found");
@@ -1783,14 +1934,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       note.setAttribute("style",
         "border:1px dashed #7c5cff;border-radius:10px;padding:8px 10px");
       note.innerHTML = "<b>Web sim logins</b> — any password works:<br>" +
-        "<b>editor</b> = Editor (can change things) · " +
-        "<b>operator</b> = Operator (read-only + 1800 inspections) · " +
-        "<b>vco</b> = VCO (accounts + inspection review)<br>" +
-        "Any other name also signs in as an Editor.";
+        "<b>vco</b> = VCO (everything + inspection review) · " +
+        "<b>operator</b> = Operator (read all + 1800 inspections + photos)<br>" +
+        "Any other name also signs in as an Operator.";
       card.insertBefore(note, loginForm);
       const u = document.getElementById("li-username");
       const p = document.getElementById("li-password");
-      if (u && !u.value) u.value = "editor";
+      if (u && !u.value) u.value = "vco";
       if (p && !p.value) p.value = "demo";
     }
   };
