@@ -15,7 +15,7 @@ build step) with a SQLite database, so it is easy to copy and run anywhere.
 
 ## ▶ Try the web sim
 
-**https://thedracospark-prog.github.io/Skyline/sim/**
+**https://ShepherdSense.github.io/Skyline/sim/**
 
 The web sim is the **real Skyline app** — the same frontend that ships in
 this repo — running against simulated data entirely in your browser. No
